@@ -153,7 +153,7 @@ static irqreturn_t stmpe_ts_handler(int irq, void *data)
 
 	input_report_abs(ts->idev, ABS_X, x);
 	input_report_abs(ts->idev, ABS_Y, y);
-	input_report_abs(ts->idev, ABS_PRESSURE, z);
+	input_report_abs(ts->idev, ABS_PRESSURE, 0xff - z);
 	input_report_key(ts->idev, BTN_TOUCH, 1);
 	input_sync(ts->idev);
 
@@ -363,6 +363,8 @@ static int stmpe_input_probe(struct platform_device *pdev)
 	input_set_abs_params(idev, ABS_X, 0, XY_MASK, 0, 0);
 	input_set_abs_params(idev, ABS_Y, 0, XY_MASK, 0, 0);
 	input_set_abs_params(idev, ABS_PRESSURE, 0x0, 0xff, 0, 0);
+	set_bit(ABS_PRESSURE, idev->absbit); 
+	set_bit(BTN_TOUCH, idev->keybit); 
 
 	error = input_register_device(idev);
 	if (error) {
