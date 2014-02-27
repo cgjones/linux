@@ -191,7 +191,8 @@
 #define FIQ_IRQS        (64 + 21)
 #define GPIO_IRQ_START  (HARD_IRQS + FIQ_IRQS)
 #define GPIO_IRQS	      (32*5)
-#define SPARE_IRQS		  (64)
-#define NR_IRQS		      (HARD_IRQS+FIQ_IRQS+GPIO_IRQS+SPARE_IRQS)
+#define PADDING_IRQS          128 /* Used for expansion (e.g. STMPE610) */
+#define NR_IRQS		      HARD_IRQS+FIQ_IRQS+GPIO_IRQS+PADDING_IRQS
+
 
 #endif /* _BCM2708_IRQS_H_ */
