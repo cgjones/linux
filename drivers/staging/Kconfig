@@ -148,4 +148,8 @@ source "drivers/staging/dgnc/Kconfig"
 
 source "drivers/staging/dgap/Kconfig"
 
+
+
+source "drivers/staging/bcm2835/Kconfig"
+
 endif # STAGING

@@ -1,4 +1,16 @@
-# V3D
+config GE
+	tristate "GE support"
+	depends on BRCM_MODULES && BRCM_MODULES_PRIV && HANTRO_WRAP
+	default N
+	help
+	  GE device driver support
+
+config GE_WRAP
+	tristate "Wrapper for GE Memory Allocater"
+	default N
+	---help---
+		GE device driver support
+
 config BRCM_V3D
 	tristate "Broadcom OpenGL engine support"
 	depends on BRCM_MODULES && BRCM_MODULES_PRIV

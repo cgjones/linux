@@ -12,5 +12,8 @@
 #*******************************************************************************
 
 #EXTRA_CFLAGS += -DMEMALLOC_LINUX_ALLOC_DMA=1
+obj-$(CONFIG_GE)		+= ge_drv.o gememalloc.o
+obj-$(CONFIG_GE_WRAP)		+= gememalloc_wrapper.o
 
-obj-$(CONFIG_GE)	:= gememalloc.o
+obj-$(CONFIG_BRCM_V3D)		+= v3d.o
+obj-$(CONFIG_BRCM_V3D_OPT)	+= v3d_opt.o
