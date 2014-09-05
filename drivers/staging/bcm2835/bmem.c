@@ -17,7 +17,6 @@ the GPL, without Broadcom's express prior written consent.
 #include "linux/delay.h"
 #include "linux/sched.h"
 #include "asm/current.h"
-#include <cfg_global.h>
 /* Our header */
 #include "bmem.h"
 
