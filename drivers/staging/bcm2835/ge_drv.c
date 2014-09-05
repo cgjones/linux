@@ -40,19 +40,8 @@ the GPL, without Broadcom's express prior written consent.
 #include <mach/irqs.h>
 #include <asm/irq.h>
 #include <linux/version.h>
-#include <linux/broadcom/bcm_major.h>
-
-#include <cfg_global.h>
-
-#if (CFG_GLOBAL_CHIP_FAMILY == CFG_GLOBAL_CHIP_FAMILY_BCMRING)
-#include <mach/csp/mm_addr.h>
-#include <mach/csp/mm_io.h>
-#include <mach/csp/chipcHw_inline.h>
-#include <mach/csp/cap.h>
-#endif
 
 #include <linux/clk.h>
-#include <mach/clkmgr.h>
 #ifdef CONFIG_HAS_WAKELOCK
 #include <linux/wakelock.h>
 #endif
@@ -68,7 +57,14 @@ MODULE_DESCRIPTION("ge driver - driver module for graphics engine");
 #define DEV_NAME "ge_drv"
 
 #define IO_SIZE 3876/*bytes*/
+/*
+ * NB/cjones: this is the address for the 21553 SoC
+
 #define GE_IO_BASE                0x08950000
+
+ * TODO/cjones: expose this through mach-<foo>
+ */
+#define GE_IO_BASE                0x7ec00000
 
 static unsigned long base_port = GE_IO_BASE;
 static dma_addr_t dma_cohr_start_addr;
@@ -79,14 +75,22 @@ static void *alloc_mem;
 module_param(base_port, ulong, 0);
 
 /* and this is our MAJOR; use 0 for dynamic allocation (recommended)*/
+#ifndef BCM_GE_MAJOR
+# define BCM_GE_MAJOR 0
+#endif
 
 static int ge_drv_major = BCM_GE_MAJOR;
 
 #ifndef BCM_CLK_GE_STR_ID
 #define BCM_CLK_GE_STR_ID	""
 #endif
+/*
+ * TODO/cjones: surely we need to set up clocks and IRQs?
+
 static struct clk *ge_clk = NULL;
 static struct clk *ge_power_clk = NULL;
+
+ */
 
 typedef struct {
 	char *buffer;
@@ -146,8 +150,8 @@ filp->private_data = temp;
 
 static int ge_release(struct inode *inode, struct file *filp)
 {
+	int i;
 	spin_lock(&ge_drv_lock);
-	int i = 0;
 	for(i =0; i<MAX_CLIENTS;i++)
 	{
 		if(private_data[i] == 0)
@@ -194,8 +198,7 @@ static int ge_mmap(struct file *file, struct vm_area_struct *vma)
     Return type     : int
 ------------------------------------------------------------------------------*/
 
-static int ge_ioctl(struct inode *inode, struct file *filp,
-                          unsigned int cmd, unsigned long arg)
+static long ge_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 		int err = 0;
 		/*
@@ -230,10 +233,10 @@ static int ge_ioctl(struct inode *inode, struct file *filp,
 		case GE_IOC_UNRESERVE:
 			//up(&ge_data.resv_sem);
 			break;
-		case GE_IOC_WAIT:
+		case GE_IOC_WAIT: {
+			int i;
 			down_interruptible(&ge_data.irq_sem);
 			spin_lock(&ge_drv_lock);
-			int i;
 			for(i =0; i<MAX_CLIENTS;i++)
 			{
 				if(private_data[i] != 0)
@@ -250,6 +253,7 @@ static int ge_ioctl(struct inode *inode, struct file *filp,
 			}
 			spin_unlock(&ge_drv_lock);
 			break;
+                }
 		}
     return 0;
 }
@@ -258,7 +262,7 @@ static int ge_ioctl(struct inode *inode, struct file *filp,
 static struct file_operations ge_drv_fops = {
 open:	ge_open,
 release:ge_release,
-ioctl:	ge_ioctl,
+compat_ioctl:	ge_ioctl,
 mmap:	ge_mmap,
 };
 
@@ -391,8 +395,8 @@ err:
 
 void __exit ge_cleanup(void)
 {
-	ge_t *dev = (ge_t *) & ge_data;
 #ifdef CONFIG_HAS_WAKELOCK
+	ge_t *dev = (ge_t *) & ge_data;
 	wake_lock_destroy(&dev->wake_lock);
 #endif
 	if (alloc_mem != NULL)
@@ -417,7 +421,6 @@ module_exit(ge_cleanup);
 ------------------------------------------------------------------------------*/
 static int ReserveIO(void)
 {
-	long int hwid;
 	if (!request_mem_region
 		(ge_data.iobaseaddr, ge_data.iosize, "ge_drv")) {
 		pr_info("ge_drv: failed to reserve HW regs\n");
