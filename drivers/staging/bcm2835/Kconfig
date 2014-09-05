@@ -1,23 +1,11 @@
-config BCM_GE
-	tristate "GE support"
-	default N
-	help
-	  GE device driver support
-
-config BCM_GE_WRAP
-	tristate "Wrapper for GE Memory Allocater"
-	default N
-	---help---
-		GE device driver support
-
 config BCM_V3D
 	tristate "Broadcom OpenGL engine support"
 	default N
-#	config BCM_V3D_OPT
-#		bool "Broadcom V3D Graphics Engine Optimized driver"
-#		depends on BCM_V3D && BMEM
-#		default N
-#		help
-#		  Broadcom V3D Graphics Engine Optimized driver
 	help
 	  Broadcom OpenGL engine support
+config BCM_V3D_BMEM_SIZE
+	int "BMEM allocation size"
+	depends on BCM_V3D
+	default 60
+	help
+		Broadcom Unified Memory Allocator allocation size
