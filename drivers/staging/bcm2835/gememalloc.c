@@ -15,7 +15,6 @@ the GPL, without Broadcom's express prior written consent.
 #include <linux/module.h>
 #include <linux/slab.h>
 
-#include <cfg_global.h>
 /* Our header */
 #include "gememalloc.h"
 
@@ -26,7 +25,7 @@ the GPL, without Broadcom's express prior written consent.
 #define PAGE_SHIFT 12
 #define GEMEMALLOC_SIZE   (1024*1024*2)
 
-MODULE_LICENSE("Proprietary");
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Broadcom");
 MODULE_DESCRIPTION("Memory allocation");
 
@@ -214,8 +213,6 @@ static int FreeMemoryForHandle(GEMEMALLOC_HDL hdl )
     {
         if ( head->handle == hdl)
         {
-			chunk* prev = head->prev;
-			chunk* next = head->next;
 			head->used = false;
 			head->handle = 0;
 
