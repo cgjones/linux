@@ -11,6 +11,8 @@ in any way with any other Broadcom software provided under a license other than
 the GPL, without Broadcom's express prior written consent.
 *******************************************************************************************/
 
+#define GE_DEBUG
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 /* needed for __init,__exit directives */
@@ -316,6 +318,10 @@ int __init ge_init(void)
 	int i;
 
 	PDEBUG("ge_drv module init\n");
+
+
+        return -ENOSYS;
+
 
 	ge_data.iobaseaddr = base_port;
 	ge_data.iosize = IO_SIZE;

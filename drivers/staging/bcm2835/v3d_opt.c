@@ -50,8 +50,8 @@ the GPL, without Broadcom's express prior written consent.
 #define BCM_CLK_V3D_POWER_STR_ID	""
 #endif
 
-#ifndef BCM21553_V3D_BASE
-#define BCM21553_V3D_BASE	0
+#ifndef V3D_BASE
+#define V3D_BASE	0x7ec00000
 #endif
 
 #ifndef IRQ_GRAPHICS
@@ -280,7 +280,7 @@ static int dbg_list_init_done = 0;
 #define KLOG_D(x...) do {} while (0)
 #endif
 /* Verbose Logs */
-#if 0
+#if 1
 #define KLOG_V(fmt,args...) \
 					do { printk(KERN_INFO KLOG_TAG "[%s:%d] "fmt"\n", __func__, __LINE__, \
 		    ##args); } \
@@ -765,8 +765,8 @@ static int v3d_proc_get_status(struct file *filp,
 	int len = 0;
 	int i, idx, avg;
 
-	KLOG_V("proc read has come: page[%p], off[%d], count[%d], data[%p] \n",
-		page, (int)off, count, data);
+	KLOG_V("proc read has come: data[%p], off[%lld], count[%d]\n",
+               data, *off, count);
 	if (off != 0) {
 		goto err;
 	}
@@ -1688,7 +1688,7 @@ static int v3d_mmap(struct file *filp, struct vm_area_struct *vma)
 		vma->vm_page_prot = pgprot_cached(vma->vm_page_prot);
 	}
 	if (!vma->vm_pgoff) {
-		vma->vm_pgoff = BCM21553_V3D_BASE >> PAGE_SHIFT;
+		vma->vm_pgoff = V3D_BASE >> PAGE_SHIFT;
 	} else if (vma->vm_pgoff != (v3d_mempool_phys_base >> PAGE_SHIFT)) {
 		KLOG_E("mmap vm_pgoff[%d] should be v3d pool base or 0.", (u32)vma->vm_pgoff);
 		return -EINVAL;
@@ -1889,7 +1889,11 @@ int __init v3d_opt_init(void)
 	int ret = 0;
 
 	KLOG_V("init");
-	
+
+
+        return -ENOSYS;
+
+
 	v3d_major = register_chrdev(0, V3D_DEV_NAME, &v3d_fops);
 	if (v3d_major < 0) {
 		KLOG_E("Registering v3d device[%s] failed", V3D_DEV_NAME);
@@ -1909,6 +1913,14 @@ int __init v3d_opt_init(void)
 	init_MUTEX(&v3d_status_sem);
 #endif
 
+
+        /* TODO/cjones: temporarily try to avoid the frankencode from
+         * doing anything damaging */
+		ret = -EINVAL;
+		goto err;
+
+
+
         /* TODO/cjones: figure out clock/IRQ */
 #if 0
 	gClkAHB = clk_get(NULL, BCM_CLK_V3D_STR_ID);
@@ -1919,7 +1931,7 @@ int __init v3d_opt_init(void)
 #endif
 	v3d_turn_all_on();
 
-	v3d_base = (void __iomem *)ioremap_nocache(BCM21553_V3D_BASE, SZ_64K);
+	v3d_base = (void __iomem *)ioremap_nocache(V3D_BASE, SZ_64K);
 	if (v3d_base == NULL) {
 		KLOG_E("mapping v3d registers failed");
 		ret = -EINVAL;

@@ -174,7 +174,7 @@ static int bmem_kill_curr_on_fail = 0;
 #endif
 
 /* Error Logs */
-#if 0
+#if 1
 #define KLOG_E(fmt,args...) \
 					do { printk(KERN_ERR "Error: [%s:%s:%d] "fmt"\n", KLOG_TAG, __func__, __LINE__, \
 		    ##args); } \
@@ -184,7 +184,7 @@ static int bmem_kill_curr_on_fail = 0;
 #endif
 
 /* Debug Logs */
-#if 0
+#if 1
 #define KLOG_D(fmt,args...) \
 		do { printk(KERN_INFO KLOG_TAG "[%s:%d] "fmt"\n", __func__, __LINE__, \
 		    ##args); } \
@@ -194,7 +194,7 @@ static int bmem_kill_curr_on_fail = 0;
 #endif
 
 /* Verbose Logs */
-#if 0
+#if 1
 #define KLOG_V(fmt,args...) \
 					do { printk(KERN_INFO KLOG_TAG "[%s:%d] "fmt"\n", __func__, __LINE__, \
 		    ##args); } \
@@ -702,8 +702,8 @@ static int bmem_proc_get_status(struct file *filp,
 	int len = 0;
 	int result;
 
-	KLOG_V("proc read has come: page[%p], off[%d], count[%d], data[%p] \n",
-		page, (int)off, count, data);
+	KLOG_V("proc read has come: data[%p], off[%lld], count[%d]\n",
+               data, *off, count);
 	if (off != 0) {
 		goto err;
 	}
@@ -1654,6 +1654,11 @@ int __init bmem_wrapper_init(void)
 	int result;
 
 	KLOG_V("Entry\n");
+
+
+        return -ENOSYS;
+
+
 	result =
 	    register_chrdev(bmem_major, "gememalloc",
 			    &bmem_wrapper_fops);

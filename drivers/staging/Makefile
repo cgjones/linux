@@ -68,4 +68,4 @@ obj-$(CONFIG_DGNC)			+= dgnc/
 obj-$(CONFIG_DGAP)			+= dgap/
 
 
-obj-$(CONFIG_ARCH_BCM2708)	+= bcm2835/
+#obj-$(CONFIG_ARCH_BCM2708)	+= bcm2835/
