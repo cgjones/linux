@@ -76,7 +76,10 @@ __pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITEBACK)
 #define BMEM_SIZE (CONFIG_BCM_BMEM_SIZE_MiB * 1024 * 1024)
 
 static int bmem_major = BCM_GEMEMALLOC_MAJOR;
-extern void *bmem_mempool_base;
+//extern void *bmem_mempool_base;
+
+void *bmem_mempool_base = NULL;
+
 static dma_addr_t dma_cohr_start_addr;
 static struct semaphore bmem_sem;
 

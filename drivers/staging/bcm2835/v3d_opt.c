@@ -110,8 +110,12 @@ static struct clk *gClkPower, *gClkAHB;
 static int irq_err = 1;
 struct task_struct *v3d_thread_task;
 unsigned int v3d_mempool_phys_base;
-extern void *v3d_mempool_base;
-extern unsigned long v3d_mempool_size;
+//extern void *v3d_mempool_base;
+//extern unsigned long v3d_mempool_size;
+
+void *v3d_mempool_base = NULL; /* TODO */
+unsigned long v3d_mempool_size = V3D_MEMPOOL_SIZE;
+
 static int v3d_bin_oom_block;
 static int v3d_bin_oom_size = (3*1024*1024);
 static void* v3d_bin_oom_cpuaddr;
