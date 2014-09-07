@@ -12,10 +12,12 @@
 #*******************************************************************************
 
 #EXTRA_CFLAGS += -DMEMALLOC_LINUX_ALLOC_DMA=1
-#obj-$(CONFIG_BCM_V3D)	+= ge_drv.o gememalloc.o gememalloc_wrapper.o v3d.o 
+#obj-$(CONFIG_BCM_V3D) += \
+	ge_drv.o \
+	gememalloc.o gememalloc_wrapper.o \
+	v3d.o 
 
 obj-$(CONFIG_BCM_V3D) += \
 	bmem.o bmem_wrapper.o \
 	ge_drv.o \
-	gememalloc.o gememalloc_wrapper.o \
 	v3d_opt.o

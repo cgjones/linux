@@ -13,24 +13,42 @@
 * other than the GPL, without Broadcom's express prior written consent.
 *******************************************************************************/
 
-#ifndef _GEMEMALLOC_IOCTL_H_
-#define _GEMEMALLOC_IOCTL_H_
+#ifndef _MEMALLOC_IOCTL_H_
+#define _MEMALLOC_IOCTL_H_
 #include <linux/ioctl.h>	/* needed for the _IOW etc stuff used later */
-
 /*
  * Ioctl definitions
  */
-#define BMEM_WRAP_MAGIC  'B'
-#define GEMEMALLOC_WRAP_ACQUIRE_BUFFER _IOWR(BMEM_WRAP_MAGIC,  1, unsigned long)
-#define GEMEMALLOC_WRAP_RELEASE_BUFFER _IOW(BMEM_WRAP_MAGIC,  2, unsigned long)
-#define GEMEMALLOC_WRAP_COPY_BUFFER _IOW(BMEM_WRAP_MAGIC,  3, unsigned long)
 
-#define BMEM_WRAP_MAXNR 15
+#if defined (CONFIG_BMEM)
+#define HANTRO_WRAP_MAGIC  'M'
+#else
+#define HANTRO_WRAP_MAGIC  'B'
+#endif
+#define HANTRO_WRAP_ACQUIRE_BUFFER _IOWR(HANTRO_WRAP_MAGIC,  1, unsigned long)
+#define HANTRO_WRAP_RELEASE_BUFFER _IOW(HANTRO_WRAP_MAGIC,  2, unsigned long)
 
-typedef struct {
+#define HANTRO_STORE_OUTBUFFER_0 _IOWR(HANTRO_WRAP_MAGIC,  3, unsigned long)
+#define HANTRO_GET_OUTBUFFER_0 _IOWR(HANTRO_WRAP_MAGIC, 4, unsigned long)
+
+#define HANTRO_STORE_OUTBUFFER_1 _IOWR(HANTRO_WRAP_MAGIC,  5, unsigned long)
+#define HANTRO_GET_OUTBUFFER_1 _IOWR(HANTRO_WRAP_MAGIC, 6, unsigned long)
+
+#define HANTRO_STORE_OUTBUFFER _IOWR(HANTRO_WRAP_MAGIC,  7, unsigned long)
+#define HANTRO_SET_OUTBUFFER_VIRTUAL_ADDRESS (HANTRO_WRAP_MAGIC,  8, unsigned long)
+#define HANTRO_GET_OUTBUFFER _IOWR(HANTRO_WRAP_MAGIC, 9, unsigned long)
+
+
+#define HANTRO_DMA_COPY 			_IOW(HANTRO_WRAP_MAGIC,  10, unsigned long)
+
+#define HANTRO_WRAP_MAXNR 15
+
+typedef struct MemallocwrapParams{
 	unsigned long busAddress;
+	unsigned long virtualaddress;
 	unsigned int size;
-} GEMemallocwrapParams;
+	struct MemallocwrapParams* nextAddress;
+} MemallocwrapParams;
 
 #ifndef _BMEM_DMA_STRUCT_
 #define _BMEM_DMA_STRUCT_
@@ -41,4 +59,6 @@ typedef struct {
 } DmaStruct;
 #endif
 
-#endif /* _GEMEMALLOC_IOCTL_H_ */
+
+
+#endif /* _MEMALLOC_IOCTL_H_ */

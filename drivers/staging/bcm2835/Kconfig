@@ -3,7 +3,7 @@ config BCM_V3D
 	default N
 	help
 	  Broadcom OpenGL engine support
-config BCM_V3D_BMEM_SIZE
+config BCM_BMEM_SIZE_MiB
 	int "BMEM allocation size"
 	depends on BCM_V3D
 	default 60

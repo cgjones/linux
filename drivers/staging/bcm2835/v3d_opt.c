@@ -25,8 +25,8 @@ the GPL, without Broadcom's express prior written consent.
 #include <asm/io.h>
 #include <asm/uaccess.h>
 #include <linux/clk.h>
-#include <mach/clkmgr.h>
-#include <plat/syscfg.h>
+//#include <mach/clkmgr.h>
+//#include <plat/syscfg.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/kthread.h>
@@ -34,6 +34,9 @@ the GPL, without Broadcom's express prior written consent.
 #include <linux/proc_fs.h>
 #include <linux/broadcom/v3d.h>
 #include "reg_v3d.h"
+
+/* Compat */
+#define init_MUTEX(sem)	 sema_init(sem, 1)
 
 #ifndef V3D_DEV_NAME
 #define V3D_DEV_NAME	"v3d"
@@ -750,10 +753,11 @@ static int v3d_proc_print_info(char *str, int value, int fract, int print_type,
  * v3d_proc_get_status()
  * Description : proc read callback to print the v3d status
  */
-static int v3d_proc_get_status(char *page, char **start,
-		   off_t off, int count, int *eof, void *data)
+static int v3d_proc_get_status(struct file *filp,
+                               char __user *data, size_t count, loff_t *off)
 {
-	char *curr = page;
+    /* TODO/cjones: recalc from fixed arguments */
+//	char *curr = page;
 	int len = 0;
 	int i, idx, avg;
 
@@ -763,6 +767,8 @@ static int v3d_proc_get_status(char *page, char **start,
 		goto err;
 	}
 
+        /* TODO/cjones: restore these writes */
+#if 0
 	down_interruptible(&v3d_status_sem);
 	V3D_PROC_PRINT_HDR("Current Usage Info");
 	avg = 0;
@@ -787,14 +793,18 @@ static int v3d_proc_get_status(char *page, char **start,
 		V3D_PROC_PRINT_D("Max", v3d_stat_groups[idx].max_time_spent);
 	}
 	up(&v3d_status_sem);
+#endif
 
 err:
+        /* TODO/cjones: fix error handling */
+#if 0
 	if (start) {
 		*start = page;
 	}
 	if (eof) {
 		*eof = 1;
 	}
+#endif
 	return (len < count) ? len : count;
 }
 
@@ -831,8 +841,8 @@ static int v3d_parse_string(const char *inputStr, u32 *opCode, u32 *arg)
  *		debug %d 				- set the debug level
  *		stat %d 				- set the statistics level
  */
-static int v3d_proc_set_status(struct file *file,
-		    const char *buffer, unsigned long count, void *data)
+static int v3d_proc_set_status(struct file *filp,
+                               const char __user *buffer, size_t count, loff_t *off)
 {
 	char inputStr[MAX_STR_SIZE];
 	int len;
@@ -1198,7 +1208,12 @@ static int v3d_job_start(int turn_on)
 	if ((p_v3d_job->job_type == V3D_JOB_REND) && (p_v3d_job->job_intern_state == 0)) {
 		KLOG_V("V3D_JOB_REND RENDERER launching...");
 		p_v3d_job->job_intern_state = 2;
-		board_sysconfig(SYSCFG_V3D, SYSCFG_INIT);
+
+                /* TODO/cjones: this asserts SYSCFG_V3DRSTR_RST (high)
+                 * on ADDR_SYSCFG_V3DRSTR and then clears it.  Does
+                 * this reset the VideoCore GPU unit? */
+		//board_sysconfig(SYSCFG_V3D, SYSCFG_INIT);
+
 		v3d_reg_init();
 		if (v3d_check_status(0)) {
 			v3d_print_status();
@@ -1208,7 +1223,8 @@ static int v3d_job_start(int turn_on)
 	} else if ((p_v3d_job->job_type == V3D_JOB_BIN_REND) && (p_v3d_job->job_intern_state == 0)) {
 		KLOG_V("V3D_JOB_BIN_REND BINNER launching...");
 		p_v3d_job->job_intern_state = 1;
-		board_sysconfig(SYSCFG_V3D, SYSCFG_INIT);
+                /* TODO/cjones: fix reset logic */
+		//board_sysconfig(SYSCFG_V3D, SYSCFG_INIT);
 		v3d_reg_init();
 		if (v3d_check_status(1)) {
 			v3d_print_status();
@@ -1239,7 +1255,8 @@ static void v3d_reset(void)
 {
 	iowrite32(0x8000, 				v3d_base + CT0CS);
 	iowrite32(0x8000, 				v3d_base + CT1CS);
-	board_sysconfig(SYSCFG_V3D, SYSCFG_INIT);
+        /* TODO/cjones: fix reset logic */
+	//board_sysconfig(SYSCFG_V3D, SYSCFG_INIT);
 	v3d_reg_init();
 	v3d_in_use = 0;
 	v3d_flags = 0;
@@ -1687,7 +1704,8 @@ static int v3d_mmap(struct file *filp, struct vm_area_struct *vma)
 	return 0;
 }
 
-static int v3d_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
+static long v3d_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+//(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	v3d_t *dev;
 	int ret = 0;
@@ -1825,7 +1843,7 @@ static struct file_operations v3d_fops =
 	.open		= v3d_open,
 	.release	= v3d_release,
 	.mmap		= v3d_mmap,
-	.ioctl		= v3d_ioctl,
+	.compat_ioctl	= v3d_ioctl,
 };
 
 
@@ -1857,6 +1875,11 @@ struct platform_driver v3d_driver = {
     .resume     =   v3d_resume,
 };
 
+static struct file_operations v3d_proc_fops = {
+	.read = v3d_proc_get_status,
+	.write = v3d_proc_set_status,
+};
+
 int __init v3d_opt_init(void)
 {
 	int ret = 0;
@@ -1882,10 +1905,13 @@ int __init v3d_opt_init(void)
 	init_MUTEX(&v3d_status_sem);
 #endif
 
+        /* TODO/cjones: figure out clock/IRQ */
+#if 0
 	gClkAHB = clk_get(NULL, BCM_CLK_V3D_STR_ID);
 	gClkPower = clk_get(NULL, BCM_CLK_V3D_POWER_STR_ID);
 #ifdef CONFIG_CPU_FREQ_GOV_BCM21553
 	cpufreq_client = cpufreq_bcm_client_get("v3d");
+#endif
 #endif
 	v3d_turn_all_on();
 
@@ -1973,14 +1999,8 @@ int __init v3d_opt_init(void)
 	}
 
 #ifdef ENABLE_PROCFS
-	v3d_proc_file = create_proc_entry(V3D_DEV_NAME, 0644, NULL);
-	if (v3d_proc_file) {
-		v3d_proc_file->data = NULL;
-		v3d_proc_file->read_proc = v3d_proc_get_status;
-		v3d_proc_file->write_proc = v3d_proc_set_status;
-		// v3d_proc_file->owner = THIS_MODULE;
-	}
-	else {
+        v3d_proc_file = proc_create(V3D_DEV_NAME, 0644, NULL, &v3d_proc_fops);
+	if (!v3d_proc_file) {
 		KLOG_E("Failed creating proc entry");
 	}
 #endif

@@ -34,11 +34,11 @@
 #include <linux/sched.h>
 #include <linux/oom.h>
 #include "linux/types.h"
+#include <linux/delay.h>
 
 #include <asm/io.h>
 #include <asm/uaccess.h>
 
-#include <linux/broadcom/bcm_major.h>
 #include <linux/broadcom/bmem_wrapper.h>
 #include <linux/broadcom/bcm_gememalloc_ioctl.h>
 
@@ -49,11 +49,15 @@
 #include <linux/file.h>
 #include <linux/debugfs.h>
 
-#include <plat/osdal_os_driver.h>
-#include <plat/osdal_os_service.h>
-#include <plat/dma_drv.h>
+//#include <plat/osdal_os_driver.h>
+//#include <plat/osdal_os_service.h>
+//#include <plat/dma_drv.h>
+/* TODO: include "mach/dma.h ? */
 
 #include <linux/proc_fs.h>
+
+/* Compat */
+#define init_MUTEX(sem)	 sema_init(sem, 1)
 
 /* module description */
 MODULE_LICENSE("GPL v2");
@@ -64,6 +68,12 @@ MODULE_AUTHOR("Braodcom");
 
 #define pgprot_cached(prot) \
 __pgprot((pgprot_val(prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITEBACK)
+
+#ifndef BCM_GEMEMALLOC_MAJOR
+# define BCM_GEMEMALLOC_MAJOR 0
+#endif
+
+#define BMEM_SIZE (CONFIG_BCM_BMEM_SIZE_MiB * 1024 * 1024)
 
 static int bmem_major = BCM_GEMEMALLOC_MAJOR;
 extern void *bmem_mempool_base;
@@ -89,11 +99,13 @@ static struct semaphore bmem_virt_list_sem;
 #define DMA_NOT_DONE         0
 #define DMA_DONE_SUCCESS     1
 #define DMA_DONE_FAILURE     2
+/*
 static DMA_CHANNEL gDmaChannel;
 static OSDAL_Dma_Chan_Info dmaChInfoMem;
 static OSDAL_Dma_Buffer_List *dmaBuffListMem=NULL;
 static OSDAL_Dma_Data dmaDataMem;
 static unsigned int dmaDone = DMA_NOT_DONE;
+*/
 struct completion dma_complete;
 
 typedef struct {
@@ -112,7 +124,8 @@ typedef struct {
 	bmem_pmem_data_t bmem_pmem_data;
 } bmem_wrapper_data_t;
 
-#define ENABLE_BMEM_OOM_VALUES
+/* TODO/cjones */
+//#define ENABLE_BMEM_OOM_VALUES
 #ifdef ENABLE_BMEM_OOM_VALUES
 
 static int bmem_adj[6] = {
@@ -251,7 +264,9 @@ static int bmem_oom_kill_task(int min_adj, pid_t *tgid_killed)
             continue;
         }
 
-        oom_adj = sig->oom_adj;
+        /* TODO/cjones: translate logic to oom_score_adj */
+//        oom_adj = sig->oom_adj;
+        oom_adj = 2;
         task_unlock(p);
         if (oom_adj < min_adj) {
 #if 0
@@ -356,7 +371,9 @@ static int bmem_oom_on_failure(int bmem_to_be_freed)
             bmem_used_by_tgid = logic.GetUsedMemoryByTgid(current->tgid);
         }
         if (current->signal) {
-            oom_adj = current->signal->oom_adj;
+            /* TODO/cjones: translate to oom_score_adj */
+            //oom_adj = current->signal->oom_adj;
+            oom_adj = 2;
         }
         KLOG_E("Kill current %s: [pid(%d) bmem(%#x) oom_adj(%d)] bmem_free(%#x) fail_adj(%d)",
             current->comm, current->tgid, bmem_used_by_tgid, oom_adj, bmem_free, bmem_adj_on_fail);
@@ -365,6 +382,8 @@ static int bmem_oom_on_failure(int bmem_to_be_freed)
 
     return bmem_freed_sum;
 }
+
+#if 0
 
 /*
  * dma_transfer_isr()
@@ -397,6 +416,7 @@ static void dma_cleanup(void)
 	//OSDAL_DMA_Release_Channel(gDmaChannel);
 }
 
+#endif
 
 /*
  * bmem_pmem_connect()
@@ -669,10 +689,13 @@ static int bmem_proc_print_info(char *str, int value, int print_type,
  * bmem_proc_get_status()
  * Description : proc read callback to print the bmem heap status
  */
-static int bmem_proc_get_status(char *page, char **start,
-		   off_t off, int count, int *eof, void *data)
+static int bmem_proc_get_status(struct file *filp,
+                                char __user *data, size_t count, loff_t *off)
+//(char *page, char **start,
+//		   off_t off, int count, int *eof, void *data)
 {
-	char *curr = page;
+	/* TODO/cjones: translate |data| into |curr| */
+//	char *curr = page;
 	int len = 0;
 	int result;
 
@@ -695,6 +718,8 @@ static int bmem_proc_get_status(char *page, char **start,
 		goto err;
 	}
 
+        /* TODO/cjones */
+#if 0
 	down(&bmem_status_sem);
 	BMEM_PROC_PRINT_HDR("Current Usage Info");
 	BMEM_PROC_PRINT_D("Used space in bytes", bmem_status.total_used_space);
@@ -719,14 +744,18 @@ static int bmem_proc_get_status(char *page, char **start,
 	BMEM_PROC_PRINT_D("Allocate Failures", bmem_status.alloc_fail_cnt);
 	BMEM_PROC_PRINT_D("Mem Free Failures", bmem_status.free_fail_cnt);
 	up(&bmem_status_sem);
+#endif
 
 err:
+        /* TODO/cjones: translate these into |off| inoutparam? */
+#if 0
 	if (start) {
 		*start = page;
 	}
 	if (eof) {
 		*eof = 1;
 	}
+#endif
 	return (len < count) ? len : count;
 }
 
@@ -782,8 +811,10 @@ static int bmem_parse_string(const char *inputStr, u32 *opCode, u32 *arg)
  *			1 - Do run-time fragmentation check on all alloc/free
  *			2 - Print entire heap partition on calls to get the status
  */
-static int bmem_proc_set_status(struct file *file,
-		    const char *buffer, unsigned long count, void *data)
+static int bmem_proc_set_status(struct file *filp,
+                                const char __user *buffer, size_t count, loff_t *off)
+//(struct file *file,
+//		    const char *buffer, unsigned long count, void *data)
 {
 	int result;
 	bmem_set_status_t bmem_set_status;
@@ -873,15 +904,16 @@ err:
  * bmem_wrapper_ioctl()
  * Description : ioctl implementation of the bmem driver
  */
-static int bmem_wrapper_ioctl(struct inode *inode, struct file *filp,
-				  unsigned int cmd, unsigned long arg)
+static long bmem_wrapper_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+//(struct inode *inode, struct file *filp,
+//				  unsigned int cmd, unsigned long arg)
 {
 	int result = -1;
 
 	pr_debug(KERN_DEBUG "bmem_wrapper_ioctl: ioctl cmd 0x%08x\n", cmd);
 
-	if (inode == NULL || filp == NULL) {
-		KLOG_E("inode or filp found NULL");
+	if (filp == NULL) {
+		KLOG_E("filp found NULL");
 		return -EFAULT;
 	}
 	/*
@@ -997,6 +1029,7 @@ static int bmem_wrapper_ioctl(struct inode *inode, struct file *filp,
 		}
 		break;
 	case GEMEMALLOC_WRAP_COPY_BUFFER:
+#if 0
 		{
 			DmaStruct dma_buffers;
 			int ret = 0;
@@ -1090,6 +1123,8 @@ static int bmem_wrapper_ioctl(struct inode *inode, struct file *filp,
 			//Free all the allocated memories.
 			dma_cleanup();
 		}
+#endif  /* GEMEMALLOC_WRAP_COPY_BUFFER */
+
  		break;
 	case PMEM_GET_PHYS:
 		{
@@ -1139,6 +1174,7 @@ static int bmem_wrapper_ioctl(struct inode *inode, struct file *filp,
 		}
 		break;
 
+#if 0
 	case HANTRO_WRAP_ACQUIRE_BUFFER:
 		{
 			bmem_wrapper_data_t *p_data = filp->private_data;
@@ -1364,6 +1400,8 @@ static int bmem_wrapper_ioctl(struct inode *inode, struct file *filp,
 			dma_cleanup();
 		}
 		break;
+#endif  /* HANTRO_DMA_COPY */
+
 	default:
 		{
 			KLOG_E ("Invalid ioctl command : file[%p] cmd[0x%08x]", filp, cmd);
@@ -1553,7 +1591,7 @@ static int bmem_wrapper_mmap(struct file *file,
 static const struct file_operations bmem_wrapper_fops = {
 	.open = bmem_wrapper_open,
 	.release = bmem_wrapper_release,
-	.ioctl = bmem_wrapper_ioctl,
+	.compat_ioctl = bmem_wrapper_ioctl,
 	.mmap = bmem_wrapper_mmap,
 };
 
@@ -1599,6 +1637,11 @@ void deregister_bmem_wrapper(void)
 
 EXPORT_SYMBOL(deregister_bmem_wrapper);
 
+static struct file_operations bmem_proc_fops = {
+	.read = bmem_proc_get_status,
+	.write = bmem_proc_set_status,
+};
+
 /*
  * bmem_wrapper_init()
  * Description : Driver init function
@@ -1633,14 +1676,8 @@ int __init bmem_wrapper_init(void)
 	init_MUTEX(&bmem_status_sem);
 	init_MUTEX(&bmem_virt_list_sem);
 
-	bmem_proc_file = create_proc_entry(DEV_NAME, 0644, NULL);
-	if (bmem_proc_file) {
-		bmem_proc_file->data = NULL;
-		bmem_proc_file->read_proc = bmem_proc_get_status;
-		bmem_proc_file->write_proc = bmem_proc_set_status;
-		// bmem_proc_file->owner = THIS_MODULE;
-	}
-	else {
+        bmem_proc_file = proc_create(DEV_NAME, 0644, NULL, &bmem_proc_fops);
+	if (!bmem_proc_file) {
 		KLOG_E("Failed creating proc entry");
 	}
 
