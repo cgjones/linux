@@ -1,4 +1,4 @@
-CONFIG_CROSS_COMPILE="arm-linux-androideabi-"
+CONFIG_CROSS_COMPILE="arm-linux-gnueabihf-"
 # CONFIG_ARM_PATCH_PHYS_VIRT is not set
 # CONFIG_LOCALVERSION_AUTO is not set
 CONFIG_SYSVIPC=y
