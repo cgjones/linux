@@ -1655,10 +1655,6 @@ int __init bmem_wrapper_init(void)
 
 	KLOG_V("Entry\n");
 
-
-        return -ENOSYS;
-
-
 	result =
 	    register_chrdev(bmem_major, "gememalloc",
 			    &bmem_wrapper_fops);

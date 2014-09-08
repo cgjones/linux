@@ -17,7 +17,10 @@
 	gememalloc.o gememalloc_wrapper.o \
 	v3d.o 
 
-obj-$(CONFIG_BCM_V3D) += \
+#obj-$(CONFIG_BCM_V3D) += \
 	bmem.o bmem_wrapper.o \
 	ge_drv.o \
 	v3d_opt.o
+
+obj-$(CONFIG_BCM_V3D) += \
+	dmaer.o

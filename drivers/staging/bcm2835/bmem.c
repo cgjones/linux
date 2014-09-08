@@ -176,10 +176,6 @@ int bmem_init(void)
     printk(KERN_DEBUG "bmem_init\n");
     printk(KERN_INFO "bmem sw build: %d \n", BMEM_SW_BUILD);
 
-
-    return -ENOSYS;
-
-
     result = register_bmem_wrapper(&bmem_fops);
     if (result < 0) {
         printk(KERN_ERR "bmem: module not inserted\n");

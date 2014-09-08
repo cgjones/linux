@@ -22,7 +22,7 @@ the GPL, without Broadcom's express prior written consent.
 #ifdef GE_DEBUG
 #  ifdef __KERNEL__
     /* This one if debugging is on, and kernel space */
-#    define PDEBUG(fmt, args...) printk( KERN_INFO "x170: " fmt, ## args)
+#    define PDEBUG(fmt, args...) printk( KERN_INFO "bcm2853: " fmt, ## args)
 #  else
     /* This one for user space */
 #    define PDEBUG(fmt, args...) printf(__FILE__ ":%d: " fmt, __LINE__ , ## args)

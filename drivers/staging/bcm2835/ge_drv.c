@@ -319,10 +319,6 @@ int __init ge_init(void)
 
 	PDEBUG("ge_drv module init\n");
 
-
-        return -ENOSYS;
-
-
 	ge_data.iobaseaddr = base_port;
 	ge_data.iosize = IO_SIZE;
 	sema_init(&ge_data.irq_sem, 0);

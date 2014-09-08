@@ -1890,10 +1890,6 @@ int __init v3d_opt_init(void)
 
 	KLOG_V("init");
 
-
-        return -ENOSYS;
-
-
 	v3d_major = register_chrdev(0, V3D_DEV_NAME, &v3d_fops);
 	if (v3d_major < 0) {
 		KLOG_E("Registering v3d device[%s] failed", V3D_DEV_NAME);
@@ -1912,14 +1908,6 @@ int __init v3d_opt_init(void)
 #ifdef ENABLE_PROCFS
 	init_MUTEX(&v3d_status_sem);
 #endif
-
-
-        /* TODO/cjones: temporarily try to avoid the frankencode from
-         * doing anything damaging */
-		ret = -EINVAL;
-		goto err;
-
-
 
         /* TODO/cjones: figure out clock/IRQ */
 #if 0
