@@ -22,5 +22,12 @@
 	ge_drv.o \
 	v3d_opt.o
 
-obj-$(CONFIG_BCM_V3D) += \
+#obj-$(CONFIG_BCM_V3D) += \
 	dmaer.o
+
+# Turn C into a usable language.
+EXTRA_CFLAGS += -Wall -Werror -Wstrict-prototypes
+
+obj-$(CONFIG_BCM_V3D) += \
+	gememalloc.o \
+	v3d.o
