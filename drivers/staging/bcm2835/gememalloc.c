@@ -117,6 +117,18 @@ VCMSG_DEFINE(MEM_ALLOC,
 	     },
 	     u32 handle);
 
+VCMSG_DEFINE(MEM_RELEASE,
+	     u32 handle,
+	     u32 error);
+
+VCMSG_DEFINE(MEM_LOCK,
+	     u32 handle,
+	     u32 bus_addr);
+
+VCMSG_DEFINE(MEM_UNLOCK,
+	     u32 handle,
+	     u32 error);
+
 /*-----------------------------------------------------------------------------
  * vc_mem.h ?
  */
@@ -198,37 +210,83 @@ static int vcmem_alloc(size_t nr_bytes, size_t align_lg2, int flags,
 	VCMSG_DECL_INIT(MEM_ALLOC, msg,	{ nr_bytes, 1 << align_lg2, flags });
 	int result = bcm_mailbox_property(&msg, sizeof(msg));
 	if (result) {
-		pr_err("Mailbox-send failed: %d", result);
+		pr_err("Mailbox-send failed: %d\n", result);
 		return result;
 	}
 	if (!is_vcmsg_success(msg)) {
-		pr_err("VC request failed: %#x", msg.hdr.response);
+		pr_err("VC request failed: %#x\n", msg.hdr.response);
 		return -EIO;
 	}
 	BUG_ON(vcmsg_out_nr_bytes(msg) != sizeof(msg.out));
 	*memh = msg.out.handle;
 	return 0;
 }
-#if 0
-static int vcmem_release(vcmem_handle_t memh)
+
+static int vcmem_release(vcmem_handle_t *memh)
 {
-	return -ENOSYS;
+	VCMSG_DECL_INIT(MEM_RELEASE, msg, *memh);
+	int result = bcm_mailbox_property(&msg, sizeof(msg));
+	if (result) {
+		pr_err("Mailbox-send failed: %d\n", result);
+		return result;
+	}
+	if (!is_vcmsg_success(msg)) {
+		pr_err("VC request failed: %#x\n", msg.hdr.response);
+		return -EIO;
+	}
+	BUG_ON(vcmsg_out_nr_bytes(msg) != sizeof(msg.out));
+	if (0 != msg.out.error) {
+		pr_err("MEM_RELEASE failed with error: %u\n", msg.out.error);
+		return -ENXIO;
+	}
+	*memh = VCMEM_HANDLE_INVALID;
+	return 0;
 }
 
 static int vcmem_lock(vcmem_handle_t memh, dma_addr_t* addr)
 {
-	return -ENOSYS;
+	VCMSG_DECL_INIT(MEM_LOCK, msg, memh);
+	int result = bcm_mailbox_property(&msg, sizeof(msg));
+	if (result) {
+		pr_err("Mailbox-send failed: %d\n", result);
+		return result;
+	}
+	if (!is_vcmsg_success(msg)) {
+		pr_err("VC request failed: %#x\n", msg.hdr.response);
+		return -EIO;
+	}
+	BUG_ON(vcmsg_out_nr_bytes(msg) != sizeof(msg.out));
+	*addr = msg.out.bus_addr;
+	return 0;
 }
 
 static int vcmem_unlock(vcmem_handle_t memh)
 {
-	return -ENOSYS;
+	VCMSG_DECL_INIT(MEM_UNLOCK, msg, memh);
+	int result = bcm_mailbox_property(&msg, sizeof(msg));
+	if (result) {
+		pr_err("Mailbox-send failed: %d\n", result);
+		return result;
+	}
+	if (!is_vcmsg_success(msg)) {
+		pr_err("VC request failed: %#x\n", msg.hdr.response);
+		return -EIO;
+	}
+	BUG_ON(vcmsg_out_nr_bytes(msg) != sizeof(msg.out));
+	if (0 != msg.out.error) {
+		pr_err("MEM_UNLOCK failed with error: %u\n", msg.out.error);
+		return -ENXIO;
+	}
+	return 0;
 }
-#endif
+
 /*---------------------------------------------------------------------------*/
 
 struct file_private_data {
 	int id;
+	/* TODO */
+	vcmem_handle_t memh;
+	dma_addr_t addr;
 };
 
 static atomic_t file_cntr;
@@ -240,16 +298,21 @@ static struct class *device_class;
  *
  */
 static int acquire_buffer(struct file* file,
-			  const GEMemallocwrapParams *params)
+			  GEMemallocwrapParams *params)
 {
-	struct file_private_data* priv = file->private_data;
+	struct file_private_data *priv = file->private_data;
 	int result;
 	vcmem_handle_t memh;
+	dma_addr_t addr;
 
 	pr_debug("acquiring buffer of size %u from file %d ...\n",
 		 params->size, priv->id);
 
-	/* TODO/cjones: need to align the size too? */
+	/* bmem_wrapper page-aligned allocation sizes, so we do here
+	 * too. */
+	params->size = ALIGN(params->size, PAGE_SIZE);
+	params->busAddress = 0;
+
 	result = vcmem_alloc(params->size, PAGE_SHIFT,
 			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
 			      VCMEM_FLAG_HINT_PERMALOCK),
@@ -257,9 +320,48 @@ static int acquire_buffer(struct file* file,
 	if (result) {
 		return result;
 	}
-	pr_debug("  got handle %#x\n", memh);
+	result = vcmem_lock(memh, &addr);
+	if (result) {
+		vcmem_release(&memh);
+		return result;
+	}
+
+	pr_debug("  locked vcmem handle %#x to bus address %#x\n", memh, addr);
 	/* TODO */
+	BUG_ON(priv->memh);
+	priv->memh = memh;
+	priv->addr = addr;
+	params->busAddress = addr;
 	return 0;
+}
+
+/*
+ *
+ */
+static int release_buffer_at(struct file* file, dma_addr_t addr)
+{
+	struct file_private_data *priv = file->private_data;
+	vcmem_handle_t* memhp;
+
+	pr_debug("releasing buffer at %#x from file %d\n", addr, priv->id);
+
+	/* TODO */
+	if (!priv->memh) {
+		pr_info("  (no buffer associated with this)\n");
+		return 0;
+	}
+	if (priv->addr != addr) {
+		pr_err("Buffer at %#x not locked by file %d (handle %#x)\n",
+		       addr, priv->id, priv->memh);
+		return -EINVAL;
+	}
+	memhp = &priv->memh;
+
+	if (vcmem_unlock(*memhp)) {
+		pr_err("Couldn't unlock handle %#x, releasing anyway ...\n",
+		       *memhp);
+	}
+	return vcmem_release(memhp);
 }
 
 static int device_open(struct inode *inode, struct file *file)
@@ -300,14 +402,32 @@ static long device_ioctl(struct file *file,
 
 	switch (cmd) {
 	case GEMEMALLOC_WRAP_ACQUIRE_BUFFER: {
-		const GEMemallocwrapParams __user *uparams = (void*)arg;
+		GEMemallocwrapParams __user *uparams = (void*)arg;
 		GEMemallocwrapParams params;
+		int result;
 
 		if (copy_from_user(&params, uparams, sizeof(params))) {
 			pr_err("Invalid arg pointer %p\n", uparams);
-			return -EINVAL;
+			return -EFAULT;
 		}
-		return acquire_buffer(file, &params);
+		result = acquire_buffer(file, &params);
+		if (result) {
+			return result;
+		}
+		if (copy_to_user(uparams, &params, sizeof(*uparams))) {
+			pr_err("Failed to copy outparams to %p\n", uparams);
+			return -EFAULT;
+		}
+		return 0;
+	}
+	case GEMEMALLOC_WRAP_RELEASE_BUFFER: {
+		const dma_addr_t __user *uaddr = (void*)arg;
+		dma_addr_t addr;
+
+		if (copy_from_user(&addr, uaddr, sizeof(addr))) {
+			return -EFAULT;
+		}
+		return release_buffer_at(file, addr);
 	}
 	default:
 		pr_err("Unknown ioctl %#x\n", cmd);
