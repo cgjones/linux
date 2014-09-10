@@ -1094,7 +1094,7 @@ static void DmaWaitAll(void)
 		}
 	}
 	time_after = jiffies;
-	PRINTK_VERBOSE(KERN_DEBUG "done, counter %d, cs %08x", counter, cs);
+	PRINTK_VERBOSE(KERN_DEBUG "done, counter %d, cs %08x\n", counter, cs);
 	PRINTK_VERBOSE(KERN_DEBUG "took %ld jiffies, %d HZ\n", time_after - time_before, HZ);
 }
 
@@ -1829,6 +1829,11 @@ static int VmaFault4k(struct vm_area_struct *pVma, struct vm_fault *pVmf)
 }
 
 /****** GENERIC FUNCTIONS ******/
+
+#define V3D_DEV_NAME "v3d"
+
+static struct class *v3d_class;
+
 static int __init dmaer_init(void)
 {
 	char v3d[3]; int ver;
@@ -1880,11 +1885,20 @@ static int __init dmaer_init(void)
 	if (result < 0)
 	{
 		PRINTK(KERN_ERR "failed to add character device\n");
-		unregister_chrdev_region(g_majorMinor, 1);
-		bcm_dma_chan_free(g_dmaChan);
-		return result;
+                goto err;
 	}
-		
+
+
+        v3d_class = class_create(THIS_MODULE, V3D_DEV_NAME);
+	if (IS_ERR(v3d_class)) {
+		PRINTK(KERN_ERR "class_create failed");
+                result = PTR_ERR(v3d_class);
+                goto err;
+	}
+	device_create(v3d_class, NULL, g_majorMinor, NULL, V3D_DEV_NAME);
+
+
+
 	QpuEnable(true);
 	PRINTK_VERBOSE(KERN_DEBUG "%08x %08x %08x", 0x20c00000, addr, *(int *)addr);
 
@@ -1918,8 +1932,13 @@ static int __init dmaer_init(void)
 	}
 	else
 		PRINTK(KERN_ERR "failed to turn on and identify V3D\n");
-	
+
 	return 0;
+
+err:
+        unregister_chrdev_region(g_majorMinor, 1);
+        bcm_dma_chan_free(g_dmaChan);
+        return result;
 }
 
 static void __exit dmaer_exit(void)
