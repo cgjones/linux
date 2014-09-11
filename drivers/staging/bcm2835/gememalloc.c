@@ -21,6 +21,7 @@ the GPL, without Broadcom's express prior written consent.
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
@@ -32,6 +33,10 @@ the GPL, without Broadcom's express prior written consent.
 
 #undef pr_debug
 #define pr_debug pr_info
+
+#define pgprot_cached(_prot)						\
+	__pgprot((pgprot_val(_prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITEBACK)
+
 
 /*-----------------------------------------------------------------------------
  * vcio.h ?
@@ -439,9 +444,30 @@ static int device_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct file_private_data *priv = file->private_data;
 
-	pr_debug("mapping file %d\n", priv->id);
+	pr_debug("mmap(file:%d off:%#lx) -> addr=%#lx (bus_addr=%#x) ...\n",
+		 priv->id, vma->vm_pgoff, vma->vm_start, priv->addr);
 
-	return -ENODEV;
+	if (!priv->memh) {
+		pr_err("Memory not yet allocated for %d\n", priv->id);
+		return -ENXIO;
+	}
+	if (vma->vm_pgoff != (priv->addr >> PAGE_SHIFT)) {
+		pr_err("Expected offset %#lx, instead it's %#x\n",
+		       vma->vm_pgoff, priv->addr >> PAGE_SHIFT);
+		return -EINVAL;
+	}
+
+	/* TODO: figure out caching semantics */
+	vma->vm_page_prot = pgprot_cached(vma->vm_page_prot);
+	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+			    vma->vm_end - vma->vm_start,
+			    vma->vm_page_prot)) {
+		pr_err("Failed to mmap() region %d (addr=%#x)\n",
+		       priv->id, priv->addr);
+		return -EAGAIN;
+	}
+	pr_debug("  ok\n");
+	return 0;
 }
 
 static struct file_operations fops = {
