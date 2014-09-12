@@ -16,6 +16,9 @@ the GPL, without Broadcom's express prior written consent.
 
 #define pr_fmt(fmt) DEV_NAME ":%s():%d: " fmt, __func__, __LINE__
 
+#include <linux/broadcom/bcm_gememalloc_ioctl.h>
+
+#include <linux/android_pmem.h>
 #include <linux/atomic.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
@@ -28,12 +31,12 @@ the GPL, without Broadcom's express prior written consent.
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
-#include <linux/broadcom/bcm_gememalloc_ioctl.h>
-
 #include <mach/vcio.h>
 
-#undef pr_debug
-#define pr_debug pr_info
+#if 0
+# undef pr_debug
+# define pr_debug pr_info
+#endif
 
 #define pgprot_cached(_prot)						\
 	__pgprot((pgprot_val(_prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITEBACK)
@@ -294,6 +297,7 @@ static int vcmem_unlock(vcmem_handle_t memh)
 struct alloc {
 	vcmem_handle_t memh;
 	dma_addr_t addr;
+	size_t nr_bytes;
 	struct list_head link;
 };
 
@@ -302,7 +306,11 @@ struct alloc {
  */
 struct file_private_data {
 	int id;
+	/*
+	 *
+	 */
 	struct mutex lock;
+	struct alloc* pmem_region;
 	struct list_head allocs;
 };
 
@@ -310,6 +318,49 @@ static atomic_t file_cntr;
 static dev_t dev;
 static struct cdev cdev;
 static struct class *device_class;
+
+/*
+ *
+ */
+static int create_alloc(size_t nr_bytes, struct alloc **allocp)
+{
+	struct alloc *alloc = *allocp = NULL;
+	int result;
+	vcmem_handle_t memh = VCMEM_HANDLE_INVALID;
+	dma_addr_t addr;
+
+	result = vcmem_alloc(nr_bytes, PAGE_SHIFT,
+			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
+			      VCMEM_FLAG_HINT_PERMALOCK),
+			     &memh);
+	if (result) {
+		goto err;
+	}
+	result = vcmem_lock(memh, &addr);
+	if (result) {
+		goto err;
+	}
+
+	pr_debug("  locked vcmem handle %#x to bus address %#x\n", memh, addr);
+
+	alloc = kmalloc(sizeof(*alloc), GFP_KERNEL);
+	if (!alloc) {
+		pr_err("Failed to kmalloc allocation entry\n");
+		result = -ENOMEM;
+		goto err;
+	}
+	alloc->memh = memh;
+	alloc->addr = addr;
+	alloc->nr_bytes = nr_bytes;
+	*allocp = alloc;
+	return 0;
+
+err:
+	vcmem_unlock(memh);
+	vcmem_release(&memh);
+	kfree(alloc);
+	return result;
+}
 
 static struct alloc *find_alloc_by_addr_locked(struct file_private_data* priv,
 					       dma_addr_t addr)
@@ -337,6 +388,10 @@ static int destroy_alloc_locked(struct file_private_data* priv,
 	BUG_ON(!mutex_is_locked(&priv->lock));
 
 	list_del(&alloc->link);
+	if (alloc == priv->pmem_region) {
+		pr_debug("  destroying pmem-compat buffer\n");
+		priv->pmem_region = NULL;
+	}
 
 	if (vcmem_unlock(alloc->memh)) {
 		pr_err("Failed to unlock handle %#x, releasing anyway ...\n",
@@ -354,6 +409,34 @@ static int destroy_alloc_locked(struct file_private_data* priv,
 	return result;
 }
 
+static int ensure_pmem_buffer_locked(struct file_private_data *priv,
+				     struct vm_area_struct *vma)
+{
+	size_t nr_bytes = vma->vm_end - vma->vm_start;
+	int result;
+
+	BUG_ON(!mutex_is_locked(&priv->lock));
+
+	if (priv->pmem_region) {
+		/*
+		 * TODO: we really shouldn't let users mmap an
+		 * existing pmem region for larger than its allocated
+		 * size ... right?  But, the bmem_wrapper driver let
+		 * that happen, so ...
+		 */
+		return 0;
+	}
+
+	pr_debug("  allocating 'special' pmem-compat buffer ...\n");
+
+	result = create_alloc(nr_bytes, &priv->pmem_region);
+	if (result) {
+		return result;
+	}
+	list_add(&priv->pmem_region->link, &priv->allocs);
+	return 0;
+}
+
 /*
  *
  */
@@ -362,8 +445,6 @@ static int acquire_buffer(struct file* file,
 {
 	struct file_private_data *priv = file->private_data;
 	int result;
-	vcmem_handle_t memh = VCMEM_HANDLE_INVALID;
-	dma_addr_t addr;
 	struct alloc *alloc;
 
 	pr_debug("acquiring buffer of size %u from file %d ...\n",
@@ -374,39 +455,17 @@ static int acquire_buffer(struct file* file,
 	params->size = ALIGN(params->size, PAGE_SIZE);
 	params->busAddress = 0;
 
-	result = vcmem_alloc(params->size, PAGE_SHIFT,
-			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
-			      VCMEM_FLAG_HINT_PERMALOCK),
-			     &memh);
+	result = create_alloc(params->size, &alloc);
 	if (result) {
-		goto err;
+		return result;
 	}
-	result = vcmem_lock(memh, &addr);
-	if (result) {
-		goto err;
-	}
-
-	pr_debug("  locked vcmem handle %#x to bus address %#x\n", memh, addr);
-
-	alloc = kmalloc(sizeof(*alloc), GFP_KERNEL);
-	if (!alloc) {
-		pr_err("Failed to kmalloc allocation entry\n");
-		goto err;
-	}
-	alloc->memh = memh;
-	alloc->addr = addr;
 
 	mutex_lock(&priv->lock); {
 		list_add(&alloc->link, &priv->allocs);
 	} mutex_unlock(&priv->lock);
 
-	params->busAddress = addr;
+	params->busAddress = alloc->addr;
 	return 0;
-
-err:
-	vcmem_unlock(memh);
-	vcmem_release(&memh);
-	return result;
 }
 
 /*
@@ -452,6 +511,7 @@ static int device_open(struct inode *inode, struct file *file)
 		return -ENOMEM;
 	}
 	priv->id = atomic_inc_return(&file_cntr);
+	priv->pmem_region = NULL;
 	mutex_init(&priv->lock);
 	INIT_LIST_HEAD(&priv->allocs);
 
@@ -520,25 +580,64 @@ static long device_ioctl(struct file *file,
 		}
 		return release_buffer_at(file, addr);
 	}
+	case PMEM_GET_PHYS: {
+		struct pmem_region __user *uregion = (void*)arg;
+		struct pmem_region region;
+
+		mutex_lock(&priv->lock); {
+			if (priv->pmem_region) {
+				region.offset = priv->pmem_region->addr;
+				region.len = priv->pmem_region->nr_bytes;
+			} else {
+				region.offset = 0;
+				region.len = 0;
+			}
+		} mutex_unlock(&priv->lock);
+
+		pr_debug("  pmem region at %#lx, size %lu\n",
+			 region.offset, region.len);
+
+		if (copy_to_user(uregion, &region, sizeof(*uregion))) {
+			return -EFAULT;
+		}
+		return 0;
+	}
 	default:
 		pr_err("Unknown ioctl %#x\n", cmd);
+		BUG_ON("(unknown ioctl)");
 		return -EINVAL;
 	}
 }
 
-static int device_mmap_locked(struct file_private_data *priv,
-			      struct vm_area_struct *vma)
+static int device_mmap_locked(struct file *file, struct vm_area_struct *vma)
 {
-	struct alloc *alloc =
-		find_alloc_by_addr_locked(priv, vma->vm_pgoff << PAGE_SHIFT);
+	struct file_private_data *priv = file->private_data;
+	int flags = 0;
+	int result;
+	struct alloc *alloc;
 
+	if (!vma->vm_pgoff) {
+		/*
+		 *
+		 */
+		result = ensure_pmem_buffer_locked(priv, vma);
+		if (result) {
+			return result;
+		}
+		vma->vm_pgoff = priv->pmem_region->addr >> PAGE_SHIFT;
+		flags = file->f_flags;
+	}
+
+	alloc = find_alloc_by_addr_locked(priv, vma->vm_pgoff << PAGE_SHIFT);
 	if (!alloc) {
 		pr_err("No allocation for file %d at offset %#lx\n",
 		       priv->id, vma->vm_pgoff);
 		return -EINVAL;
 	}
-	/* TODO: figure out caching semantics */
-	vma->vm_page_prot = pgprot_cached(vma->vm_page_prot);
+
+	vma->vm_page_prot = (O_SYNC & flags) ?
+			    pgprot_noncached(vma->vm_page_prot) :
+			    pgprot_cached(vma->vm_page_prot);
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			    vma->vm_end - vma->vm_start,
 			    vma->vm_page_prot)) {
@@ -559,21 +658,8 @@ static int device_mmap(struct file *file, struct vm_area_struct *vma)
 	pr_debug("mmap(file:%d off:%#lx) -> addr=%#lx ...\n",
 		 priv->id, vma->vm_pgoff, vma->vm_start);
 
-	if (!vma->vm_pgoff) {
-		size_t nr_bytes = vma->vm_end - vma->vm_start;
-		GEMemallocwrapParams params = { .size = nr_bytes };
-
-		pr_debug("  doing 'special' pmem-compat acquire ...\n");
-
-		result = acquire_buffer(file, &params);
-		if (result) {
-			return result;
-		}
-		vma->vm_pgoff = params.busAddress >> PAGE_SHIFT;
-	}
-
 	mutex_lock(&priv->lock); {
-		result = device_mmap_locked(priv, vma);
+		result = device_mmap_locked(file, vma);
 	} mutex_unlock(&priv->lock);
 
 	return result;

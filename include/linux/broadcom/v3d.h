@@ -13,6 +13,7 @@ the GPL, without Broadcom's express prior written consent.
 #ifndef _V3D_H_
 #define _V3D_H_
 #include <linux/ioctl.h>
+#include <linux/types.h>
 
 #define V3D_DEV_NAME	"v3d"
 #define BCM_V3D_MAGIC	'V'

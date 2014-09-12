@@ -16,6 +16,8 @@ the GPL, without Broadcom's express prior written consent.
 
 #define pr_fmt(fmt) DEV_NAME ":%s():%d: " fmt, __func__, __LINE__
 
+#include <linux/broadcom/v3d.h>
+
 #include <linux/atomic.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
@@ -73,8 +75,17 @@ static long device_ioctl(struct file *file,
 	pr_debug("ioctl(%#x, arg=%#lx) on file %d\n", cmd, arg, priv->id);
 
 	switch (cmd) {
+	case V3D_IOCTL_POST_JOB: {
+		pr_err("POST_JOB: TODO\n");
+		return -EINVAL;
+	}
+	case V3D_IOCTL_WAIT_JOB: {
+		pr_err("WAIT_JOB: TODO\n");
+		return -EINVAL;
+	}
 	default:
 		pr_err("Unknown ioctl %#x\n", cmd);
+		BUG_ON("(unknown ioctl)");
 		return -EINVAL;
 	}
 }
