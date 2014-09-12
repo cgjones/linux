@@ -559,6 +559,19 @@ static int device_mmap(struct file *file, struct vm_area_struct *vma)
 	pr_debug("mmap(file:%d off:%#lx) -> addr=%#lx ...\n",
 		 priv->id, vma->vm_pgoff, vma->vm_start);
 
+	if (!vma->vm_pgoff) {
+		size_t nr_bytes = vma->vm_end - vma->vm_start;
+		GEMemallocwrapParams params = { .size = nr_bytes };
+
+		pr_debug("  doing 'special' pmem-compat acquire ...\n");
+
+		result = acquire_buffer(file, &params);
+		if (result) {
+			return result;
+		}
+		vma->vm_pgoff = params.busAddress >> PAGE_SHIFT;
+	}
+
 	mutex_lock(&priv->lock); {
 		result = device_mmap_locked(priv, vma);
 	} mutex_unlock(&priv->lock);
