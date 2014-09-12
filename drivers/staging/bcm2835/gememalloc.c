@@ -21,6 +21,7 @@ the GPL, without Broadcom's express prior written consent.
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
+#include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/printk.h>
@@ -287,17 +288,71 @@ static int vcmem_unlock(vcmem_handle_t memh)
 
 /*---------------------------------------------------------------------------*/
 
-struct file_private_data {
-	int id;
-	/* TODO */
+/*
+ *
+ */
+struct alloc {
 	vcmem_handle_t memh;
 	dma_addr_t addr;
+	struct list_head link;
+};
+
+/*
+ *
+ */
+struct file_private_data {
+	int id;
+	struct mutex lock;
+	struct list_head allocs;
 };
 
 static atomic_t file_cntr;
 static dev_t dev;
 static struct cdev cdev;
 static struct class *device_class;
+
+static struct alloc *find_alloc_by_addr_locked(struct file_private_data* priv,
+					       dma_addr_t addr)
+{
+	struct alloc *alloc;
+
+	BUG_ON(!mutex_is_locked(&priv->lock));
+
+	list_for_each_entry(alloc, &priv->allocs, link) {
+		if (addr == alloc->addr) {
+			return alloc;
+		}
+	}
+	return NULL;
+}
+
+/*
+ *
+ */
+static int destroy_alloc_locked(struct file_private_data* priv,
+				struct alloc *alloc)
+{
+	int result = 0;
+
+	BUG_ON(!mutex_is_locked(&priv->lock));
+
+	list_del(&alloc->link);
+
+	if (vcmem_unlock(alloc->memh)) {
+		pr_err("Failed to unlock handle %#x, releasing anyway ...\n",
+		       alloc->memh);
+		result = -EINVAL;
+		/* Continue on to attempt to release the handle. */
+	}
+	if (vcmem_release(&alloc->memh)) {
+		pr_err("Failed to release handle %#x ... oh well\n",
+		       alloc->memh);
+		result = -ENXIO;
+	}
+
+	kfree(alloc);
+	return result;
+}
 
 /*
  *
@@ -307,8 +362,9 @@ static int acquire_buffer(struct file* file,
 {
 	struct file_private_data *priv = file->private_data;
 	int result;
-	vcmem_handle_t memh;
+	vcmem_handle_t memh = VCMEM_HANDLE_INVALID;
 	dma_addr_t addr;
+	struct alloc *alloc;
 
 	pr_debug("acquiring buffer of size %u from file %d ...\n",
 		 params->size, priv->id);
@@ -323,50 +379,65 @@ static int acquire_buffer(struct file* file,
 			      VCMEM_FLAG_HINT_PERMALOCK),
 			     &memh);
 	if (result) {
-		return result;
+		goto err;
 	}
 	result = vcmem_lock(memh, &addr);
 	if (result) {
-		vcmem_release(&memh);
-		return result;
+		goto err;
 	}
 
 	pr_debug("  locked vcmem handle %#x to bus address %#x\n", memh, addr);
-	/* TODO */
-	BUG_ON(priv->memh);
-	priv->memh = memh;
-	priv->addr = addr;
+
+	alloc = kmalloc(sizeof(*alloc), GFP_KERNEL);
+	if (!alloc) {
+		pr_err("Failed to kmalloc allocation entry\n");
+		goto err;
+	}
+	alloc->memh = memh;
+	alloc->addr = addr;
+
+	mutex_lock(&priv->lock); {
+		list_add(&alloc->link, &priv->allocs);
+	} mutex_unlock(&priv->lock);
+
 	params->busAddress = addr;
 	return 0;
+
+err:
+	vcmem_unlock(memh);
+	vcmem_release(&memh);
+	return result;
 }
 
 /*
  *
  */
+static int release_buffer_at_locked(struct file_private_data *priv,
+				    dma_addr_t addr)
+{
+	struct alloc *alloc;
+
+	BUG_ON(!mutex_is_locked(&priv->lock));
+
+	alloc = find_alloc_by_addr_locked(priv, addr);
+	if (!alloc) {
+		pr_err("Failed release of unknown or unowned buffer at %#x)\n",
+		       addr);
+		return -ENXIO;
+	}
+	return destroy_alloc_locked(priv, alloc);
+}
 static int release_buffer_at(struct file* file, dma_addr_t addr)
 {
 	struct file_private_data *priv = file->private_data;
-	vcmem_handle_t* memhp;
+	int result;
 
 	pr_debug("releasing buffer at %#x from file %d\n", addr, priv->id);
 
-	/* TODO */
-	if (!priv->memh) {
-		pr_info("  (no buffer associated with this)\n");
-		return 0;
-	}
-	if (priv->addr != addr) {
-		pr_err("Buffer at %#x not locked by file %d (handle %#x)\n",
-		       addr, priv->id, priv->memh);
-		return -EINVAL;
-	}
-	memhp = &priv->memh;
-
-	if (vcmem_unlock(*memhp)) {
-		pr_err("Couldn't unlock handle %#x, releasing anyway ...\n",
-		       *memhp);
-	}
-	return vcmem_release(memhp);
+	mutex_lock(&priv->lock); {
+		result = release_buffer_at_locked(priv, addr);
+	} mutex_unlock(&priv->lock);
+	return result;
 }
 
 static int device_open(struct inode *inode, struct file *file)
@@ -377,11 +448,12 @@ static int device_open(struct inode *inode, struct file *file)
 
 	priv = kmalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
-		pr_err("Failed to kmalloc private data");
+		pr_err("Failed to kmalloc private data\n");
 		return -ENOMEM;
 	}
-	memset(priv, 0, sizeof(*priv));
 	priv->id = atomic_inc_return(&file_cntr);
+	mutex_init(&priv->lock);
+	INIT_LIST_HEAD(&priv->allocs);
 
 	pr_debug("  opened %d\n", priv->id);
 	file->private_data = priv;
@@ -391,9 +463,23 @@ static int device_open(struct inode *inode, struct file *file)
 static int device_release(struct inode *inode, struct file *file)
 {
 	struct file_private_data *priv = file->private_data;
+	struct alloc *alloc;
+	struct alloc *tmp;
 
 	pr_debug("releasing file %d\n", priv->id);
 
+	/*
+	 * No need to lock here because we have the last ref to the
+	 * file and so must have exclusive access.  But lock anyway to
+	 * make assertions happy, since it'll be uncontended.
+	 */
+	mutex_lock(&priv->lock); {
+		list_for_each_entry_safe(alloc, tmp, &priv->allocs, link) {
+			pr_debug("  (destroying still-alive alloc at %#x)\n",
+				 alloc->addr);
+			destroy_alloc_locked(priv, alloc);
+		}
+	} mutex_unlock(&priv->lock);
 	kfree(priv);
 	return 0;
 }
@@ -440,34 +526,44 @@ static long device_ioctl(struct file *file,
 	}
 }
 
-static int device_mmap(struct file *file, struct vm_area_struct *vma)
+static int device_mmap_locked(struct file_private_data *priv,
+			      struct vm_area_struct *vma)
 {
-	struct file_private_data *priv = file->private_data;
+	struct alloc *alloc =
+		find_alloc_by_addr_locked(priv, vma->vm_pgoff << PAGE_SHIFT);
 
-	pr_debug("mmap(file:%d off:%#lx) -> addr=%#lx (bus_addr=%#x) ...\n",
-		 priv->id, vma->vm_pgoff, vma->vm_start, priv->addr);
-
-	if (!priv->memh) {
-		pr_err("Memory not yet allocated for %d\n", priv->id);
-		return -ENXIO;
-	}
-	if (vma->vm_pgoff != (priv->addr >> PAGE_SHIFT)) {
-		pr_err("Expected offset %#lx, instead it's %#x\n",
-		       vma->vm_pgoff, priv->addr >> PAGE_SHIFT);
+	if (!alloc) {
+		pr_err("No allocation for file %d at offset %#lx\n",
+		       priv->id, vma->vm_pgoff);
 		return -EINVAL;
 	}
-
 	/* TODO: figure out caching semantics */
 	vma->vm_page_prot = pgprot_cached(vma->vm_page_prot);
 	if (remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
 			    vma->vm_end - vma->vm_start,
 			    vma->vm_page_prot)) {
-		pr_err("Failed to mmap() region %d (addr=%#x)\n",
-		       priv->id, priv->addr);
+		pr_err("Failed to mmap() region %#x in %d (addr=%#x)\n",
+		       alloc->memh, priv->id, alloc->addr);
+		/* bmem_wrapper returned this code in this case, so we
+		 * do too. */
 		return -EAGAIN;
 	}
 	pr_debug("  ok\n");
 	return 0;
+}
+static int device_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	struct file_private_data *priv = file->private_data;
+	int result;
+
+	pr_debug("mmap(file:%d off:%#lx) -> addr=%#lx ...\n",
+		 priv->id, vma->vm_pgoff, vma->vm_start);
+
+	mutex_lock(&priv->lock); {
+		result = device_mmap_locked(priv, vma);
+	} mutex_unlock(&priv->lock);
+
+	return result;
 }
 
 static struct file_operations fops = {
