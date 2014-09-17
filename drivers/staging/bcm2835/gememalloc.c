@@ -22,6 +22,7 @@ the GPL, without Broadcom's express prior written consent.
 #include <linux/atomic.h>
 #include <linux/cdev.h>
 #include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
@@ -41,6 +42,8 @@ the GPL, without Broadcom's express prior written consent.
 #define pgprot_cached(_prot)						\
 	__pgprot((pgprot_val(_prot) & ~L_PTE_MT_MASK) | L_PTE_MT_WRITEBACK)
 
+
+//#define USE_VCMSG_MEM_ALLOC
 
 /*---------------------------------------------------------------------------*/
 
@@ -74,8 +77,8 @@ static struct class *device_class;
 
 
 
-size_t allocated_nr_bytes = (3 * (1 << 20)) + (2 * 1920 * 1080 * 2);
-size_t all_allocs_nr_bytes = (3 * (1 << 20)) + (2 * 1920 * 1080 * 2);
+static size_t allocated_nr_bytes;
+static size_t all_allocs_nr_bytes;
 
 
 
@@ -92,6 +95,7 @@ static int create_alloc(size_t nr_bytes, struct alloc **allocp)
 	pr_debug("attempting to allocate %u bytes; %u already alloc'd\n",
 		 nr_bytes, allocated_nr_bytes);
 
+#ifdef USE_VCMSG_MEM_ALLOC
 	result = vcmem_alloc(nr_bytes, PAGE_SHIFT,
 /*			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
 			     VCMEM_FLAG_HINT_PERMALOCK),*/
@@ -104,6 +108,16 @@ static int create_alloc(size_t nr_bytes, struct alloc **allocp)
 	if (result) {
 		goto err;
 	}
+#else
+	memh = (vcmem_handle_t)dma_alloc_coherent(NULL, nr_bytes, &addr,
+						  GFP_KERNEL);
+	if (!memh) {
+		pr_err("Failed to allocate %u bytes of DMA mem (%u total alloc)\n",
+		       nr_bytes, allocated_nr_bytes);
+		result = -ENOMEM;
+		goto err;
+	}
+#endif
 
 	pr_debug("  locked vcmem handle %#x to bus address %#x\n", memh, addr);
 
@@ -126,8 +140,13 @@ static int create_alloc(size_t nr_bytes, struct alloc **allocp)
 	return 0;
 
 err:
+
+#ifdef USE_VCMSG_MEM_ALLOC
 	vcmem_unlock(memh);
 	vcmem_release(&memh);
+#else
+	dma_free_coherent(NULL, nr_bytes, (void*)memh, addr);
+#endif
 	kfree(alloc);
 	return result;
 }
@@ -162,6 +181,8 @@ static int destroy_alloc_locked(struct file_private_data* priv,
 		pr_debug("  destroying pmem-compat buffer\n");
 		priv->pmem_region = NULL;
 	}
+
+#ifdef USE_VCMSG_MEM_ALLOC
 	if (vcmem_unlock(alloc->memh)) {
 		pr_err("Failed to unlock handle %#x, releasing anyway ...\n",
 		       alloc->memh);
@@ -173,7 +194,10 @@ static int destroy_alloc_locked(struct file_private_data* priv,
 		       alloc->memh);
 		result = -ENXIO;
 	}
-
+#else
+	dma_free_coherent(NULL, alloc->nr_bytes,
+			  (void*)alloc->memh, alloc->addr);
+#endif
 
 
 	allocated_nr_bytes -= alloc->nr_bytes;

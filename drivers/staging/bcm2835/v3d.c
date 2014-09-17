@@ -66,10 +66,6 @@ static dma_addr_t oom_reserve;
 /*static dma_addr_t oom_block2; ???*/
 
 
-extern size_t allocated_nr_bytes;
-extern size_t all_allocs_nr_bytes;
-
-
 
 DEFINE_MUTEX(B3DL);
 
@@ -132,14 +128,13 @@ static int run_render_job_direct(struct file_private_data *priv,
 }
 
 
-static void grab_mem(const char *tag, size_t nr_bytes, int release)
+inline static void grab_mem(const char *tag, size_t nr_bytes, int release)
 {
 	vcmem_handle_t memh;
 	dma_addr_t addr;
 	int result;
 
-	pr_debug("%s:   allocating %u bytes; %u already alloc'd; %u all allocs ...\n",
-		 tag, nr_bytes, allocated_nr_bytes, all_allocs_nr_bytes);
+	pr_debug("%s:   allocating %u bytes\n", tag, nr_bytes);
 
 	result = vcmem_alloc(nr_bytes, PAGE_SHIFT,
 			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
@@ -152,19 +147,16 @@ static void grab_mem(const char *tag, size_t nr_bytes, int release)
 	if (result) {
 		return;
 	}
-	allocated_nr_bytes += nr_bytes;
-	all_allocs_nr_bytes += nr_bytes;
 
 	pr_debug("    got handle %#x at %#x\n", memh, addr);
 
 	if (release) {
 		vcmem_unlock(memh);
 		vcmem_release(&memh);
-		allocated_nr_bytes -= nr_bytes;
 	}
 }
 
-static void poke_mbox(const char *tag)
+inline static void poke_mbox(const char *tag)
 {
 	vcmem_handle_t fake = -1;
 	int result;
@@ -189,7 +181,7 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 	pr_debug("running binning+render job ...\n");
 
 //#define ALLOC_BEFORE (4 * (1 << 20))
-#define ALLOC_AFTER  (4 * (1 << 20))
+//#define ALLOC_AFTER  (4 * (1 << 20))
 
 
 #ifdef ALLOC_BEFORE
@@ -305,7 +297,7 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 	++priv->finished_jobs;
 
 
-	poke_mbox("AFTER");
+//	poke_mbox("AFTER");
 #ifdef ALLOC_AFTER
 	grab_mem("AFTER", ALLOC_AFTER, 0);
 

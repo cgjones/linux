@@ -38,11 +38,6 @@
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
 
-
-#define BCM2708_FB_DEBUG
-#define MODULE_NAME "bcm2708_fb"
-
-
 #ifdef BCM2708_FB_DEBUG
 #define print_debug(fmt,...) pr_err("DEBUG: %s:%s:%d: "fmt, MODULE_NAME, __func__, __LINE__, ##__VA_ARGS__)
 #else

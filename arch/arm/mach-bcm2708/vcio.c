@@ -137,18 +137,9 @@ static irqreturn_t mbox_irq(int irq, void *dev_id)
 	int status = readl(mbox->status);
 	int ret = IRQ_NONE;
 
-
-        pr_err("MBOX_IRQ: status %#x\n", status);
-
-
 	while (!(status & ARM_MS_EMPTY)) {
 		uint32_t msg = readl(mbox->read);
 		int chan = MBOX_CHAN(msg);
-
-
-                pr_err("  message on chan %d\n", chan);
-
-
 		if (chan < MBOX_CHAN_COUNT) {
 			if (mbox->msg[chan]) {
 				/* Overflow */
@@ -157,11 +148,6 @@ static irqreturn_t mbox_irq(int irq, void *dev_id)
 				       chan, msg);
 			} else {
 				mbox->msg[chan] = (msg | 0xf);
-
-
-                                pr_err("    raising sem for %d\n", chan);
-
-
 				up(&mbox->sema[chan]);
 			}
 		} else {
@@ -191,28 +177,9 @@ static int dev_mbox_write(struct device *dev, unsigned chan, uint32_t data28)
 	int rc;
 
 	struct vc_mailbox *mailbox = dev_get_drvdata(dev);
-
-
-        pr_err("MBOX_WRITE(%x, %#x): locking dev\n", chan, data28);
-
-
 	device_lock(dev);
-
-
-        pr_err("    doing write\n");
-
-
 	rc = mbox_write(mailbox, chan, data28);
-
-
-        pr_err("    unlocking\n");
-
-
 	device_unlock(dev);
-
-
-        pr_err("    done\n");
-
 
 	return rc;
 }
@@ -222,28 +189,9 @@ static int dev_mbox_read(struct device *dev, unsigned chan, uint32_t *data28)
 	int rc;
 
 	struct vc_mailbox *mailbox = dev_get_drvdata(dev);
-
-
-        pr_err("MBOX_READ(%x): locking dev\n", chan);
-
-
 	device_lock(dev);
-
-
-        pr_err("    doing read\n");
-
-
 	rc = mbox_read(mailbox, chan, data28);
-
-
-        pr_err("    unlocking\n");
-
-
 	device_unlock(dev);
-
-
-        pr_err("    done\n");
-
 
 	return rc;
 }
