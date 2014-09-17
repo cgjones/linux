@@ -33,7 +33,7 @@ the GPL, without Broadcom's express prior written consent.
 
 #include "vc_util.h"
 
-#if 0
+#if 1
 # undef pr_debug
 # define pr_debug pr_info
 #endif
@@ -72,6 +72,13 @@ static dev_t dev;
 static struct cdev cdev;
 static struct class *device_class;
 
+
+
+size_t allocated_nr_bytes = (3 * (1 << 20)) + (2 * 1920 * 1080 * 2);
+size_t all_allocs_nr_bytes = (3 * (1 << 20)) + (2 * 1920 * 1080 * 2);
+
+
+
 /*
  *
  */
@@ -82,9 +89,13 @@ static int create_alloc(size_t nr_bytes, struct alloc **allocp)
 	vcmem_handle_t memh = VCMEM_HANDLE_INVALID;
 	dma_addr_t addr;
 
+	pr_debug("attempting to allocate %u bytes; %u already alloc'd\n",
+		 nr_bytes, allocated_nr_bytes);
+
 	result = vcmem_alloc(nr_bytes, PAGE_SHIFT,
-			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
-			      VCMEM_FLAG_HINT_PERMALOCK),
+/*			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
+			     VCMEM_FLAG_HINT_PERMALOCK),*/
+			     VCMEM_FLAG_COHERENT | VCMEM_FLAG_HINT_PERMALOCK,
 			     &memh);
 	if (result) {
 		goto err;
@@ -106,6 +117,12 @@ static int create_alloc(size_t nr_bytes, struct alloc **allocp)
 	alloc->addr = addr;
 	alloc->nr_bytes = nr_bytes;
 	*allocp = alloc;
+
+
+	allocated_nr_bytes += nr_bytes;
+	all_allocs_nr_bytes += nr_bytes;
+
+
 	return 0;
 
 err:
@@ -145,7 +162,6 @@ static int destroy_alloc_locked(struct file_private_data* priv,
 		pr_debug("  destroying pmem-compat buffer\n");
 		priv->pmem_region = NULL;
 	}
-
 	if (vcmem_unlock(alloc->memh)) {
 		pr_err("Failed to unlock handle %#x, releasing anyway ...\n",
 		       alloc->memh);
@@ -157,6 +173,11 @@ static int destroy_alloc_locked(struct file_private_data* priv,
 		       alloc->memh);
 		result = -ENXIO;
 	}
+
+
+
+	allocated_nr_bytes -= alloc->nr_bytes;
+
 
 	kfree(alloc);
 	return result;
@@ -348,7 +369,7 @@ static long device_ioctl(struct file *file,
 			}
 		} mutex_unlock(&priv->lock);
 
-		pr_debug("  pmem region at %#lx, size %lu\n",
+		pr_debug("  PMEM_GET_PHYS: region at %#lx, size %lu\n",
 			 region.offset, region.len);
 
 		if (copy_to_user(uregion, &region, sizeof(*uregion))) {

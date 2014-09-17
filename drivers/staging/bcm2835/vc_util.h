@@ -109,6 +109,13 @@ VCMSG_DEFINE(QPU_ENABLE_DISABLE,
 	     u32 enable_disable,
 	     );
 
+
+/* ? */
+VCMSG_DEFINE(GET_BOARD_MAC_ADDRESS,
+	     ,
+	     u32 mac_addr);
+
+
 /*-----------------------------------------------------------------------------
  * vc_mem.h ?
  */
@@ -196,5 +203,6 @@ enum {
 };
 
 extern int vcqpu_set_state(u32 state);
+
 
 #endif /* _BCM2708_VC_UTIL_H */

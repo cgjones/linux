@@ -38,6 +38,7 @@ the GPL, without Broadcom's express prior written consent.
  * TODO: taken as-is from v3d_opt driver.  Tune this.  Can it really
  * be a constant or do we need to dynamically grow it?
  */
+//#define OOM_RESERVE_NR_BYTES (32 * (1 << 20))
 #define OOM_RESERVE_NR_BYTES (3 * (1 << 20))
 
 #undef pr_debug
@@ -65,8 +66,12 @@ static dma_addr_t oom_reserve;
 /*static dma_addr_t oom_block2; ???*/
 
 
-DEFINE_MUTEX(B3DL);
+extern size_t allocated_nr_bytes;
+extern size_t all_allocs_nr_bytes;
 
+
+
+DEFINE_MUTEX(B3DL);
 
 
 /*
@@ -97,20 +102,22 @@ static void regs_reset(void)
 	reg_write(0, VPACNTL);
 	reg_write(oom_reserve, BPOA);
 	reg_write(OOM_RESERVE_NR_BYTES, BPOS);
+#if 0
 	reg_write(0xf, INTCTL);
 	reg_write(0x7, INTENA);
+#endif
 }
 
 static void qpu_reset(void)
 {
-	reg_write(CT0CS, 1 << 15);
-	reg_write(CT1CS, 1 << 15);
+	reg_write(1 << 15, CT0CS);
+	reg_write(1 << 15, CT1CS);
 }
 
 static int run_render_job_direct(struct file_private_data *priv,
 				 struct v3d_job *job)
 {
-	pr_debug("running binning+render job ...\n");
+	pr_debug("running render job ...\n");
 	return -ENOSYS;
 
 	/* reset 3d block */
@@ -124,6 +131,52 @@ static int run_render_job_direct(struct file_private_data *priv,
 	return 0;
 }
 
+
+static void grab_mem(const char *tag, size_t nr_bytes, int release)
+{
+	vcmem_handle_t memh;
+	dma_addr_t addr;
+	int result;
+
+	pr_debug("%s:   allocating %u bytes; %u already alloc'd; %u all allocs ...\n",
+		 tag, nr_bytes, allocated_nr_bytes, all_allocs_nr_bytes);
+
+	result = vcmem_alloc(nr_bytes, PAGE_SHIFT,
+			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
+			      VCMEM_FLAG_HINT_PERMALOCK),
+			     &memh);
+	if (result) {
+		return;
+	}
+	result = vcmem_lock(memh, &addr);
+	if (result) {
+		return;
+	}
+	allocated_nr_bytes += nr_bytes;
+	all_allocs_nr_bytes += nr_bytes;
+
+	pr_debug("    got handle %#x at %#x\n", memh, addr);
+
+	if (release) {
+		vcmem_unlock(memh);
+		vcmem_release(&memh);
+		allocated_nr_bytes -= nr_bytes;
+	}
+}
+
+static void poke_mbox(const char *tag)
+{
+	vcmem_handle_t fake = -1;
+	int result;
+
+	pr_debug("%s:   'releasing' fake mem handle %#x ...\n", tag, fake);
+
+	result = vcmem_release(&fake);
+
+	pr_debug("%s:     result was %d\n", tag, result);
+}
+
+
 #define MAX_ATTEMPTS (1 << 20)
 
 static int run_bin_render_job_direct(struct file_private_data *priv,
@@ -135,8 +188,25 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 
 	pr_debug("running binning+render job ...\n");
 
+//#define ALLOC_BEFORE (4 * (1 << 20))
+#define ALLOC_AFTER  (4 * (1 << 20))
+
+
+#ifdef ALLOC_BEFORE
+	grab_mem("BEFORE", ALLOC_BEFORE, 0);
+#endif
+
 	/* reset 3d block */
-	regs_reset();
+	//regs_reset();
+
+	reg_write(1 << 2, L2CACTL);
+#if 1
+	reg_write(0, BPOA);
+	reg_write(0, BPOS);
+#else
+	reg_write(oom_reserve, BPOA);
+	reg_write(OOM_RESERVE_NR_BYTES, BPOS);
+#endif
 
 	/*
 	 * TODO: this is a hack to stand things up.  We want to be
@@ -148,12 +218,33 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 	pr_debug("  initially BFC=%d, RFC=%d\n", initial_bfc, initial_rfc);
 
 	/* Binning? */
+	reg_write(1 << 5, CT0CS);
 	reg_write(job->spec.v3d_ct0ca, CT0CA);
 	reg_write(job->spec.v3d_ct0ea, CT0EA);
 	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
 		u32 bfc;
 
 		cpu_relax();
+
+		if ((0x100 & reg_read(PCS)) && (0 == reg_read(BPOS))) {
+			u32 ca = reg_read(CT0CA);
+
+			pr_err("  out of bin memory\n");
+
+			reg_write(oom_reserve, BPOA);
+			reg_write(OOM_RESERVE_NR_BYTES, BPOS);
+
+			for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
+				cpu_relax();
+
+				if (ca != reg_read(CT0CA)) {
+					pr_debug("    ... resumed\n");
+					break;
+				}
+			}
+			attempts = 0;
+			continue;
+		}
 
 		bfc = reg_read(BFC) & 0xff;
 		if (bfc == ((initial_bfc + 1) & 0xff)) {
@@ -170,8 +261,10 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 	}
 
 	/* Render? */
+	reg_write(1 << 5, CT1CS);
 	reg_write(job->spec.v3d_ct1ca, CT1CA);
 	reg_write(job->spec.v3d_ct1ea, CT1EA);
+#if 1
 	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
 		u32 rfc;
 
@@ -190,15 +283,14 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 		result = -EBUSY;
 		goto err;
 	}
+#endif
 
 	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
-		u32 pcs;
-
 		schedule();
 
-		pcs = reg_read(PCS);
-		if (0 == pcs) {
-			pr_debug("  pcs is 0. Yay?\n");
+		if (0 == reg_read(PCS)) {
+			pr_debug("  pcs is 0. Yay? after %d checks\n",
+				 attempts);
 			break;
 		}
 	}
@@ -211,10 +303,19 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 
 	pr_debug("  bin+render seems to have finished successfully\n");
 	++priv->finished_jobs;
-	return 0;
 
+
+	poke_mbox("AFTER");
+#ifdef ALLOC_AFTER
+	grab_mem("AFTER", ALLOC_AFTER, 0);
+
+#endif
+
+
+	goto out;
 err:
 	qpu_reset();
+out:
 	return result;
 }
 
@@ -256,6 +357,8 @@ out:
 
 	mutex_unlock(&B3DL);
 
+
+	pr_debug("  finished job\n");
 
 	kfree(job);
 	return result;
@@ -417,7 +520,10 @@ static int __init v3d_init(void)
 		result = -ENODEV;
 		goto err;
 	}
+	qpu_reset();
 
+	pr_info("  allocating %u bytes of OOM reserve\n",
+		OOM_RESERVE_NR_BYTES);
 	result = vcmem_alloc(OOM_RESERVE_NR_BYTES, PAGE_SHIFT,
 			     /* TODO: cache coherency? */
 			     VCMEM_FLAG_COHERENT | VCMEM_FLAG_HINT_PERMALOCK,
