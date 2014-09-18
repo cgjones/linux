@@ -72,6 +72,13 @@ config ANDROID_INTF_ALARM_DEV
 	  elapsed realtime, and a non-wakeup alarm on the monotonic clock.
 	  Also exports the alarm interface to user-space.
 
+config ANDROID_DUMMY_FBEARLYSUSPEND
+	bool "Dummy fbearlysuspend implementation"
+	default n
+	---help---
+	  Provides sysfs interface compatible with obsolete fbearlysuspend
+	  system.  Only appropriate for devices that don't use eager suspend.
+
 config SYNC
 	bool "Synchronization framework"
 	default n
