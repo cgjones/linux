@@ -117,6 +117,7 @@ static int create_alloc(size_t nr_bytes, struct alloc **allocp)
 		result = -ENOMEM;
 		goto err;
 	}
+	/* TODO: are we supposed to zero this memory? */
 #endif
 
 	pr_debug("  locked vcmem handle %#x to bus address %#x\n", memh, addr);
