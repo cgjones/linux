@@ -52,8 +52,8 @@ the GPL, without Broadcom's express prior written consent.
 #define pr_debug pr_info
 
 enum {
-	V3D_BINNING_DONE = 1 << 0,
-	V3D_RENDER_DONE = 1 << 1,
+	V3D_RENDER_DONE = 1 << 0,
+	V3D_BINNING_DONE = 1 << 1,
 	V3D_THREAD_STATUS_MASK = (V3D_BINNING_DONE | V3D_RENDER_DONE),
 
 	V3D_BINNING_OOM = 1 << 2,
@@ -106,9 +106,10 @@ static struct class *device_class;
 static struct oom_reserve oom_reserves[2];
 static int oom_reserve_idx;
 static int status_flags;
+static DECLARE_WAIT_QUEUE_HEAD(status_flags_changed);
 
 
-DEFINE_MUTEX(B3DL);
+static DEFINE_MUTEX(B3DL);
 
 
 /*
@@ -232,10 +233,20 @@ static irqreturn_t handle_irq(int irq, void *unused)
 	if (status_flags) {
 		ret = IRQ_HANDLED;
 		oom_reserve_idx = 0;
+		wake_up_interruptible(&status_flags_changed);
 	}
-	/* TODO wake event */
-
 	return ret;
+}
+
+static int wait_for_status_flags_change(void)
+{
+	int result;
+	do {
+		/* TODO: timeout? */
+		result = wait_event_interruptible(status_flags_changed,
+						  0 != status_flags);
+	} while (0 != result && -ERESTARTSYS == result);
+	return result;
 }
 
 static int run_render_job_direct(struct file_private_data *priv,
@@ -302,10 +313,10 @@ inline static void poke_mbox(const char *tag)
 static int run_bin_render_job_direct(struct file_private_data *priv,
 				     struct v3d_job *job)
 {
-	int result = 0;
-	int attempts;
+	int result;
 
 	pr_debug("running binning+render job ...\n");
+
 
 //#define ALLOC_BEFORE (4 * (1 << 20))
 //#define ALLOC_AFTER  (4 * (1 << 20))
@@ -314,79 +325,41 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 	grab_mem("BEFORE", ALLOC_BEFORE, 0);
 #endif
 
-	/* TODO: reset 3d block? */
 
+	/* TODO: reset 3d block? */
 	regs_init();
 	status_flags = 0;
-
-
-
-	pr_debug("BFC:%d, RFC:%d\n", reg_read(BFC), reg_read(RFC));
-
-
-
 
 	/* Binning. */
 	reg_write(V3D_THREADCTL_RUN, CT0CS);
 	reg_write(job->spec.v3d_ct0ca, CT0CA);
 	reg_write(job->spec.v3d_ct0ea, CT0EA);
-	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
-		cpu_relax();
 
-		if (V3D_BINNING_OOM & status_flags) {
-			pr_err("OOM during binning; aborting job\n");
-			goto err;
-		}
-		if (1 == reg_read(BFC)) {
-			pr_debug("  binning completed! after %d checks\n",
-				 attempts);
-			break;
-		}
-	}
-	if (MAX_ATTEMPTS == attempts) {
-		pr_err("Binning didn't complete within %d checks\n",
-		       attempts);
-		result = -EBUSY;
+	result = wait_for_status_flags_change();
+	if (result) {
+		pr_err("Failed to wait for binning to complete: %d\n",
+			result);
 		goto err;
 	}
+	if (V3D_BINNING_OOM & status_flags) {
+		pr_err("OOM during binning: aborting job\n");
+		goto err;
+	}
+	BUG_ON(1 != reg_read(BFC) || !(V3D_BINNING_DONE & status_flags));
+	status_flags = 0;
 
 	/* Render. */
 	reg_write(V3D_THREADCTL_RUN, CT1CS);
 	reg_write(job->spec.v3d_ct1ca, CT1CA);
 	reg_write(job->spec.v3d_ct1ea, CT1EA);
-#if 1
-	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
-		schedule();
 
-		if (1 == reg_read(RFC)) {
-			pr_debug("  render completed!(?) after %d checks\n",
-				 attempts);
-			break;
-		}
-	}
-	if (MAX_ATTEMPTS == attempts) {
-		pr_err("Render didn't complete(?) within %d checks\n",
-		       attempts);
-		result = -EBUSY;
+	result = wait_for_status_flags_change();
+	if (result) {
+		pr_err("Failed to wait for render to complete: %d\n",
+			result);
 		goto err;
 	}
-#endif
-
-	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
-		schedule();
-
-		if (0 == reg_read(PCS)) {
-			pr_debug("  pcs is 0. Yay? after %d checks\n",
-				 attempts);
-			break;
-		}
-	}
-	if (MAX_ATTEMPTS == attempts) {
-		pr_err("PCS reg didn't reach 0(?) within %d checks\n",
-		       attempts);
-		result = -EBUSY;
-		goto err;
-	}
+	BUG_ON(1 != reg_read(RFC) || !(V3D_RENDER_DONE & status_flags));
 
 	pr_debug("  bin+render seems to have finished successfully\n");
 	++priv->finished_jobs;
