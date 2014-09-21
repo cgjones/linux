@@ -22,6 +22,7 @@ the GPL, without Broadcom's express prior written consent.
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/fs.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/printk.h>
@@ -35,14 +36,48 @@ the GPL, without Broadcom's express prior written consent.
 #include "vc_util.h"
 
 /*
+ * Much of the information used to write this driver is taken from the
+ * documentation of the VideoCore IV accelerated 3d graphics guide at
+ *
+ * http://www.broadcom.com/docs/support/videocore/VideoCoreIV-AG100-R.pdf
+ */
+
+/*
  * TODO: taken as-is from v3d_opt driver.  Tune this.  Can it really
  * be a constant or do we need to dynamically grow it?
  */
-//#define OOM_RESERVE_NR_BYTES (32 * (1 << 20))
 #define OOM_RESERVE_NR_BYTES (3 * (1 << 20))
 
 #undef pr_debug
 #define pr_debug pr_info
+
+enum {
+	V3D_BINNING_DONE = 1 << 0,
+	V3D_RENDER_DONE = 1 << 1,
+	V3D_THREAD_STATUS_MASK = (V3D_BINNING_DONE | V3D_RENDER_DONE),
+
+	V3D_BINNING_OOM = 1 << 2,
+};
+
+enum {
+	V3D_THREADCTL_ERROR = 1 << 3,
+	V3D_THREADCTL_RUN = 1 << 5,
+	V3D_THREADCTL_RESET = 1 << 15,
+};
+
+enum {
+	V3D_L2_CACHE_ENABLED = 0,
+	V3D_L2_CACHE_DISABLE = 1 << 1,
+	V3D_L2_CACHE_CLEAR = 1 << 2,
+};
+
+enum {
+	V3D_BIN_RENDER_COUNT_CLEAR = 0x1,
+};
+
+enum {
+	V3D_SLICES_CACHECTL_CLEAR = 0x0f0f0f0f,
+};
 
 static void __iomem *v3d_iomem_base = (void*)IO_ADDRESS(V3D_BASE);
 
@@ -50,6 +85,12 @@ struct v3d_job {
 	int dev_id;
 	v3d_job_post_t spec;
 	/* &c. */
+};
+
+struct oom_reserve {
+	vcmem_handle_t memh;
+	dma_addr_t addr;
+	size_t nr_bytes;
 };
 
 struct file_private_data {
@@ -61,10 +102,10 @@ static atomic_t file_cntr;
 static dev_t dev;
 static struct cdev cdev;
 static struct class *device_class;
-static vcmem_handle_t oom_reserve_handle = VCMEM_HANDLE_INVALID;
-static dma_addr_t oom_reserve;
-/*static dma_addr_t oom_block2; ???*/
-
+/* We use 2 OOM reserves because that's what the old v3d_opt driver did. */
+static struct oom_reserve oom_reserves[2];
+static int oom_reserve_idx;
+static int status_flags;
 
 
 DEFINE_MUTEX(B3DL);
@@ -86,28 +127,115 @@ static u32 reg_read(u32 reg)
 	return ioread32(v3d_iomem_base + reg);
 }
 
-static void regs_reset(void)
-{
-	reg_write(2, L2CACTL);
-	reg_write(0x8000, CT0CS);
-	reg_write(0x8000, CT1CS);
-	reg_write(1, RFC);
-	reg_write(1, BFC);
-	reg_write(0x0f0f0f0f, SLCACTL);
-	reg_write(0, VPMBASE);
-	reg_write(0, VPACNTL);
-	reg_write(oom_reserve, BPOA);
-	reg_write(OOM_RESERVE_NR_BYTES, BPOS);
-#if 0
-	reg_write(0xf, INTCTL);
-	reg_write(0x7, INTENA);
-#endif
-}
-
 static void qpu_reset(void)
 {
-	reg_write(1 << 15, CT0CS);
-	reg_write(1 << 15, CT1CS);
+	reg_write(V3D_THREADCTL_RESET, CT0CS);
+	reg_write(V3D_THREADCTL_RESET, CT1CS);
+}
+
+static void regs_init(void)
+{
+	/* TODO v3d_opt driver did this, should we? */
+	/*reg_write(V3D_L2_CACHE_DISABLE, L2CACTL);*/
+	/* TODO dmaer driver did this */
+	reg_write(V3D_L2_CACHE_CLEAR, L2CACTL);
+	qpu_reset();
+	reg_write(V3D_BIN_RENDER_COUNT_CLEAR, BFC);
+	reg_write(V3D_BIN_RENDER_COUNT_CLEAR, RFC);
+	reg_write(V3D_SLICES_CACHECTL_CLEAR, SLCACTL);
+	reg_write(0, VPMBASE);
+	reg_write(0, VPACNTL);
+	reg_write(oom_reserves[0].addr, BPOA);
+	reg_write(oom_reserves[0].nr_bytes, BPOS);
+	reg_write(0xf, INTCTL);
+	reg_write(0x7, INTENA);
+}
+
+static int alloc_oom_reserve(struct oom_reserve *reserve)
+{
+	int result;
+
+	reserve->nr_bytes = OOM_RESERVE_NR_BYTES;
+	/* TODO use dma_coherent for this? */
+	result = vcmem_alloc(reserve->nr_bytes, PAGE_SHIFT,
+			     /* TODO: cache coherency? */
+			     VCMEM_FLAG_COHERENT | VCMEM_FLAG_HINT_PERMALOCK,
+			     &reserve->memh);
+	if (result) {
+		pr_err("Failed to allocate OOM reserve\n");
+		return result;
+	}
+	result = vcmem_lock(reserve->memh, &reserve->addr);
+	if (result) {
+		pr_err("Failed to lock OOM reserve into memory\n");
+		return result;
+	}
+
+	pr_info("  oom reserve: %u bytes at %#x (handle %#x)\n",
+		reserve->nr_bytes, reserve->addr, reserve->memh);
+	return result;
+}
+
+static void free_oom_reserve(struct oom_reserve *reserve)
+{
+	vcmem_unlock(reserve->memh);
+	vcmem_release(&reserve->memh);
+}
+
+static irqreturn_t handle_irq(int irq, void *unused)
+{
+	u32 flags, qpu_flags, tmp;
+	irqreturn_t ret = IRQ_NONE;
+
+	BUG_ON(IRQ_3D != irq);
+
+	flags = reg_read(INTCTL);
+	qpu_flags = reg_read(DBQITC);
+
+	/* Clear interrupts we're going to handle. */
+	tmp = flags & reg_read(INTENA);
+	reg_write(tmp, INTCTL);
+	if (qpu_flags) {
+		reg_write(qpu_flags, DBQITC);
+	}
+
+	/* Save execution status for worker to read. */
+	status_flags = (V3D_THREAD_STATUS_MASK & flags);
+
+	if (V3D_BINNING_OOM & flags) {
+		ret = IRQ_HANDLED;
+		switch (oom_reserve_idx) {
+		case 0:
+		case 1:
+			pr_debug("binning OOM: supplying reserve mem %d\n",
+				 oom_reserve_idx);
+			reg_write(oom_reserves[oom_reserve_idx].addr,
+				  BPOA);
+			reg_write(oom_reserves[oom_reserve_idx].nr_bytes,
+				  BPOS);
+			++oom_reserve_idx;
+			break;
+		default:
+			pr_debug("binning OOM: exhausted reserves\n");
+			/* Tell the worker this was an unrecoverable
+			 * OOM. */
+			status_flags |= V3D_BINNING_OOM;
+			/* Disable OOM interrupt. */
+			reg_write(V3D_BINNING_OOM, INTDIS);
+			break;
+		}
+		/* (It's not known what this is for; seems redundant
+		 * with above.) */
+		reg_write(V3D_BINNING_OOM, INTCTL);
+	}
+
+	if (status_flags) {
+		ret = IRQ_HANDLED;
+		oom_reserve_idx = 0;
+	}
+	/* TODO wake event */
+
+	return ret;
 }
 
 static int run_render_job_direct(struct file_private_data *priv,
@@ -117,7 +245,7 @@ static int run_render_job_direct(struct file_private_data *priv,
 	return -ENOSYS;
 
 	/* reset 3d block */
-	regs_reset();
+	regs_init();
 	/* check status */
 	reg_write(job->spec.v3d_ct1ca, CT1CA);
 	reg_write(job->spec.v3d_ct1ea, CT1EA);
@@ -175,7 +303,6 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 				     struct v3d_job *job)
 {
 	int result = 0;
-	u32 initial_bfc, initial_rfc;
 	int attempts;
 
 	pr_debug("running binning+render job ...\n");
@@ -183,63 +310,34 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 //#define ALLOC_BEFORE (4 * (1 << 20))
 //#define ALLOC_AFTER  (4 * (1 << 20))
 
-
 #ifdef ALLOC_BEFORE
 	grab_mem("BEFORE", ALLOC_BEFORE, 0);
 #endif
 
-	/* reset 3d block */
-	//regs_reset();
+	/* TODO: reset 3d block? */
 
-	reg_write(1 << 2, L2CACTL);
-#if 1
-	reg_write(0, BPOA);
-	reg_write(0, BPOS);
-#else
-	reg_write(oom_reserve, BPOA);
-	reg_write(OOM_RESERVE_NR_BYTES, BPOS);
-#endif
+	regs_init();
+	status_flags = 0;
 
-	/*
-	 * TODO: this is a hack to stand things up.  We want to be
-	 * using interrupts for status updates.
-	 */
 
-	initial_bfc = reg_read(BFC) & 0xff;
-	initial_rfc = reg_read(RFC) & 0xff;
-	pr_debug("  initially BFC=%d, RFC=%d\n", initial_bfc, initial_rfc);
 
-	/* Binning? */
-	reg_write(1 << 5, CT0CS);
+	pr_debug("BFC:%d, RFC:%d\n", reg_read(BFC), reg_read(RFC));
+
+
+
+
+	/* Binning. */
+	reg_write(V3D_THREADCTL_RUN, CT0CS);
 	reg_write(job->spec.v3d_ct0ca, CT0CA);
 	reg_write(job->spec.v3d_ct0ea, CT0EA);
 	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
-		u32 bfc;
-
 		cpu_relax();
 
-		if ((0x100 & reg_read(PCS)) && (0 == reg_read(BPOS))) {
-			u32 ca = reg_read(CT0CA);
-
-			pr_err("  out of bin memory\n");
-
-			reg_write(oom_reserve, BPOA);
-			reg_write(OOM_RESERVE_NR_BYTES, BPOS);
-
-			for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
-				cpu_relax();
-
-				if (ca != reg_read(CT0CA)) {
-					pr_debug("    ... resumed\n");
-					break;
-				}
-			}
-			attempts = 0;
-			continue;
+		if (V3D_BINNING_OOM & status_flags) {
+			pr_err("OOM during binning; aborting job\n");
+			goto err;
 		}
-
-		bfc = reg_read(BFC) & 0xff;
-		if (bfc == ((initial_bfc + 1) & 0xff)) {
+		if (1 == reg_read(BFC)) {
 			pr_debug("  binning completed! after %d checks\n",
 				 attempts);
 			break;
@@ -252,18 +350,15 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 		goto err;
 	}
 
-	/* Render? */
-	reg_write(1 << 5, CT1CS);
+	/* Render. */
+	reg_write(V3D_THREADCTL_RUN, CT1CS);
 	reg_write(job->spec.v3d_ct1ca, CT1CA);
 	reg_write(job->spec.v3d_ct1ea, CT1EA);
 #if 1
 	for (attempts = 0; attempts < MAX_ATTEMPTS; ++attempts) {
-		u32 rfc;
-
 		schedule();
 
-		rfc = reg_read(RFC) & 0xff;
-		if (rfc == ((initial_rfc + 1) & 0xff)) {
+		if (1 == reg_read(RFC)) {
 			pr_debug("  render completed!(?) after %d checks\n",
 				 attempts);
 			break;
@@ -308,6 +403,7 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 err:
 	qpu_reset();
 out:
+	status_flags = 0;
 	return result;
 }
 
@@ -477,12 +573,13 @@ static struct file_operations fops = {
 
 static void clean_up(void)
 {
+	free_irq(IRQ_3D, &dev);
 	device_destroy(device_class, dev);
 	class_destroy(device_class);
 	cdev_del(&cdev);
 	unregister_chrdev_region(dev, 1);
-	vcmem_unlock(oom_reserve_handle);
-	vcmem_release(&oom_reserve_handle);
+	free_oom_reserve(&oom_reserves[0]);
+	free_oom_reserve(&oom_reserves[1]);
 	vcqpu_set_state(VCQPU_DISABLED);
 }
 
@@ -514,23 +611,14 @@ static int __init v3d_init(void)
 	}
 	qpu_reset();
 
-	pr_info("  allocating %u bytes of OOM reserve\n",
-		OOM_RESERVE_NR_BYTES);
-	result = vcmem_alloc(OOM_RESERVE_NR_BYTES, PAGE_SHIFT,
-			     /* TODO: cache coherency? */
-			     VCMEM_FLAG_COHERENT | VCMEM_FLAG_HINT_PERMALOCK,
-			     &oom_reserve_handle);
+	result = alloc_oom_reserve(&oom_reserves[0]);
 	if (result) {
-		pr_err("Failed to allocate OOM reserve\n");
 		goto err;
 	}
-	result = vcmem_lock(oom_reserve_handle, &oom_reserve);
+	result = alloc_oom_reserve(&oom_reserves[1]);
 	if (result) {
-		pr_err("Failed to lock OOM reserve into memory\n");
 		goto err;
 	}
-	pr_info("  oom reserve: %u bytes at %#x (handle %#x)\n",
-		OOM_RESERVE_NR_BYTES, oom_reserve, oom_reserve_handle);
 
 	pr_info("  creating /dev/" DEV_NAME " ...\n");
 	result = alloc_chrdev_region(&dev, 0, 1, DEV_NAME);
@@ -553,6 +641,12 @@ static int __init v3d_init(void)
 	}
 	/* TODO: can this fail? */
 	device_create(device_class, NULL, dev, NULL, DEV_NAME);
+
+	result = request_irq(IRQ_3D, handle_irq, IRQF_SHARED, DEV_NAME, &dev);
+	if (result) {
+		pr_err("Failed to install isr for v3d irq\n");
+		goto err;
+	}
 
 	pr_info("  success\n");
 	return 0;
