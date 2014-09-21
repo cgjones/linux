@@ -266,65 +266,12 @@ static int run_render_job_direct(struct file_private_data *priv,
 	return 0;
 }
 
-
-inline static void grab_mem(const char *tag, size_t nr_bytes, int release)
-{
-	vcmem_handle_t memh;
-	dma_addr_t addr;
-	int result;
-
-	pr_debug("%s:   allocating %u bytes\n", tag, nr_bytes);
-
-	result = vcmem_alloc(nr_bytes, PAGE_SHIFT,
-			     (VCMEM_FLAG_ALLOCATING | VCMEM_FLAG_NO_INIT |
-			      VCMEM_FLAG_HINT_PERMALOCK),
-			     &memh);
-	if (result) {
-		return;
-	}
-	result = vcmem_lock(memh, &addr);
-	if (result) {
-		return;
-	}
-
-	pr_debug("    got handle %#x at %#x\n", memh, addr);
-
-	if (release) {
-		vcmem_unlock(memh);
-		vcmem_release(&memh);
-	}
-}
-
-inline static void poke_mbox(const char *tag)
-{
-	vcmem_handle_t fake = -1;
-	int result;
-
-	pr_debug("%s:   'releasing' fake mem handle %#x ...\n", tag, fake);
-
-	result = vcmem_release(&fake);
-
-	pr_debug("%s:     result was %d\n", tag, result);
-}
-
-
-#define MAX_ATTEMPTS (1 << 20)
-
 static int run_bin_render_job_direct(struct file_private_data *priv,
 				     struct v3d_job *job)
 {
 	int result;
 
 	pr_debug("running binning+render job ...\n");
-
-
-//#define ALLOC_BEFORE (4 * (1 << 20))
-//#define ALLOC_AFTER  (4 * (1 << 20))
-
-#ifdef ALLOC_BEFORE
-	grab_mem("BEFORE", ALLOC_BEFORE, 0);
-#endif
-
 
 	/* TODO: reset 3d block? */
 	regs_init();
@@ -363,15 +310,6 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 
 	pr_debug("  bin+render seems to have finished successfully\n");
 	++priv->finished_jobs;
-
-
-//	poke_mbox("AFTER");
-#ifdef ALLOC_AFTER
-	grab_mem("AFTER", ALLOC_AFTER, 0);
-
-#endif
-
-
 	goto out;
 err:
 	qpu_reset();
