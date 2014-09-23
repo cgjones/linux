@@ -48,6 +48,9 @@ the GPL, without Broadcom's express prior written consent.
  */
 #define OOM_RESERVE_NR_BYTES (3 * (1 << 20))
 
+/* v3d_opt used this timeout. */
+#define ISR_TIMEOUT_MS 750
+
 #undef pr_debug
 #define pr_debug pr_info
 
@@ -240,13 +243,14 @@ static irqreturn_t handle_irq(int irq, void *unused)
 
 static int wait_for_status_flags_change(void)
 {
-	int result;
+	long timeout;
 	do {
-		/* TODO: timeout? */
-		result = wait_event_interruptible(status_flags_changed,
-						  0 != status_flags);
-	} while (0 != result && -ERESTARTSYS == result);
-	return result;
+		timeout = wait_event_interruptible_timeout(status_flags_changed,
+							   0 != status_flags,
+							   msecs_to_jiffies(ISR_TIMEOUT_MS));
+		
+	} while (timeout < 0 && -ERESTARTSYS == timeout);
+	return timeout > 0 ? 0 : (timeout < 0 ? timeout : -EBUSY);
 }
 
 static int run_render_job_direct(struct file_private_data *priv,
@@ -296,6 +300,7 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 	status_flags = 0;
 
 	/* Render. */
+	reg_write(V3D_SLICES_CACHECTL_CLEAR, SLCACTL);
 	reg_write(V3D_THREADCTL_RUN, CT1CS);
 	reg_write(job->spec.v3d_ct1ca, CT1CA);
 	reg_write(job->spec.v3d_ct1ea, CT1EA);
@@ -313,6 +318,7 @@ static int run_bin_render_job_direct(struct file_private_data *priv,
 	goto out;
 err:
 	qpu_reset();
+	reg_write(V3D_SLICES_CACHECTL_CLEAR, SLCACTL);
 out:
 	status_flags = 0;
 	return result;

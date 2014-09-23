@@ -295,6 +295,8 @@ static int release_buffer_at(struct file* file, dma_addr_t addr)
 	mutex_lock(&priv->lock); {
 		result = release_buffer_at_locked(priv, addr);
 	} mutex_unlock(&priv->lock);
+
+	pr_debug("  done\n");
 	return result;
 }
 
