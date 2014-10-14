@@ -34,7 +34,7 @@ the GPL, without Broadcom's express prior written consent.
 
 #include "vc_util.h"
 
-#if 1
+#if 0
 # undef pr_debug
 # define pr_debug pr_info
 #endif

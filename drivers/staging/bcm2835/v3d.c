@@ -51,8 +51,10 @@ the GPL, without Broadcom's express prior written consent.
 /* v3d_opt used this timeout. */
 #define ISR_TIMEOUT_MS 750
 
+#if 0
 #undef pr_debug
 #define pr_debug pr_info
+#endif
 
 enum {
 	V3D_RENDER_DONE = 1 << 0,

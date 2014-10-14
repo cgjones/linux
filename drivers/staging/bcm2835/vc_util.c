@@ -6,7 +6,7 @@
 
 #include <linux/kernel.h>
 
-#if 1
+#if 0
 # undef pr_debug
 # define pr_debug pr_info
 #endif
