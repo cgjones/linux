@@ -503,7 +503,8 @@ enum hvs_pixel_format {
 	HVS_PIXEL_FORMAT_RGB888 = 5,
 	HVS_PIXEL_FORMAT_RGBA6666 = 6,
 	/* 32bpp */
-	HVS_PIXEL_FORMAT_RGBA8888 = 7
+	HVS_PIXEL_FORMAT_RGBA8888 = 7,
+	HVS_PIXEL_FORMAT_BGRA8888 = 8
 };
 
 /* Note: the LSB is the rightmost character shown.  Only valid for
